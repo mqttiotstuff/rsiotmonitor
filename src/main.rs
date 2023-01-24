@@ -4,9 +4,8 @@
 // #![deny(warnings)]
 use futures_util::stream::{futures_unordered::FuturesUnordered, StreamExt};
 
-use log::{log, warn};
 #[allow(unused_imports)]
-use log::{debug, error, info, trace};
+use log::{debug, warn , error, info, trace};
 use mqtt_async_client::{
     client::{
         Client, KeepAlive, Publish as PublishOpts, QoS, Subscribe as SubscribeOpts, SubscribeTopic,
@@ -18,124 +17,44 @@ use mqtt_async_client::{
 use rustls;
 #[cfg(feature = "tls")]
 use std::io::Cursor;
+
 use structopt::StructOpt;
-use tokio::{time::Duration};
+
+use tokio::time::Duration;
 #[cfg(feature = "tls")]
 use webpki_roots;
 
 use rsiotmonitor::*;
-use std::{collections::HashMap, time::SystemTime};
-
-#[derive(Debug)]
-struct Config {
-    /// Username to authenticate with, optional.
-    username: Option<String>,
-
-    /// Password to authenticate with, optional.
-    password: Option<String>,
-
-    /// Host to connect to, REQUIRED.
-    url: String,
-
-    /// monitoring base topic
-    base_topic: String,
-
-    /// Client ID to identify as, optional.
-    client_id: Option<String>,
-
-    /// Enable TLS and set the path to a PEM file containing the
-    /// CA certificate that signs the remote server's certificate.
-    tls_server_ca_file: Option<String>,
-
-    /// Enable TLS and trust the CA certificates in the webpki-roots
-    /// crate, ultimately Mozilla's root certificates.
-    tls_mozilla_root_cas: bool,
-
-    /// Enable TLS and set the path to a PEM file containing the
-    /// client certificate for client authentication.
-    tls_client_crt_file: Option<String>,
-
-    /// Enable TLS and set the path to a PEM file containing the
-    /// client rsa key for client authentication.
-    tls_client_rsa_key_file: Option<String>,
-
-    /// Keepalive interval in seconds
-    keep_alive: u16,
-
-    /// Operation timeout in seconds
-    op_timeout: u16,
-
-    /// monitored elements
-    monitored_devices: HashMap<String, Box<MonitoringInfo>>,
-}
+use std::{
+    collections::HashMap,
+    sync::{Arc, RwLock},
+    time::SystemTime,
+};
 
 use toml_parse::*;
 
-fn update_monitorinfo_from_config_table(
-    monitor_info: &mut MonitoringInfo,
-    table: &toml_parse::Table,
-) {
-    for kv in table.items() {
-        if let Some(keyname) = kv.key() {
-            match kv.value() {
-                Value::StrLit(s) => {
-                    if keyname == "watchTopics" {
-                        let mut topicList = Vec::new();
-                        topicList.push(s.clone());
-                        monitor_info.watch_topics = topicList;
-                    }
-                }
-                _ => (),
-            }
-        }
-    }
-}
+/// check all the processes are properly running
+pub async fn check_running_processes(config: &mut Config) -> Result<()> {
+    // browsing and getting all running processes
 
-fn read_mqtt_config_table(config: &mut Config, table: &toml_parse::Table) {
-    assert!(table.header() == "mqtt");
-    for kv in table.items() {
-        if let Some(keyname) = kv.key() {
-            match kv.value() {
-                Value::StrLit(s) => match keyname {
-                    "serverAddress" => {
-                        config.url = s.clone();
-                    }
-                    "baseTopic" => {
-                        config.base_topic = s.clone();
-                    }
-                    "password" => {
-                        config.password = Some(s.clone());
-                    }
-                    "clientid" => {
-                        config.client_id = Some(s.clone());
-                    }
-                    "user" => {
-                        config.username = Some(s.clone());
-                    }
-                    s => {
-                        panic!("unknown mqtt section property : {}", s);
-                    }
-                },
-                _ => (),
-            }
-        }
-    }
+    Ok(())
 }
-
 
 async fn read_configuration() -> Result<Config> {
     let mut config = Config {
-        username: None,
-        password: None,
-        url: "".into(),
-        base_topic: "iotmonitor/monitoring".into(),
-        client_id: None,
-        tls_server_ca_file: None,
-        tls_mozilla_root_cas: false,
-        tls_client_crt_file: None,
-        tls_client_rsa_key_file: None,
-        keep_alive: 10,
-        op_timeout: 10,
+        mqtt_config: MqttConfig {
+            username: None,
+            password: None,
+            url: "".into(),
+            base_topic: "iotmonitor/monitoring".into(),
+            client_id: None,
+            tls_server_ca_file: None,
+            tls_mozilla_root_cas: false,
+            tls_client_crt_file: None,
+            tls_client_rsa_key_file: None,
+            keep_alive: 10,
+            op_timeout: 10,
+        },
         monitored_devices: HashMap::new(),
     };
 
@@ -149,13 +68,29 @@ async fn read_configuration() -> Result<Config> {
         match i {
             toml_parse::Value::Table(table) => {
                 if table.header() == "mqtt" {
-                    read_mqtt_config_table(&mut config, table);
+                    rsiotmonitor::read_mqtt_config_table(&mut config.mqtt_config, table);
                 } else {
                     // create MonitorInfo
-                    let name = table.header().into();
+                    let mut name: String = table.header().into();
+                    let mut isagent: bool = false;
+
+                    if table.header().starts_with("agent_") {
+                        if let Some(without_suffix) = name.strip_prefix("agent_") {
+                            name = without_suffix.into();
+                            isagent = true;
+                        }
+                    }
                     let mut monitor_info = MonitoringInfo::create(name);
 
-                    update_monitorinfo_from_config_table(&mut monitor_info, &table);
+                    rsiotmonitor::update_monitorinfo_from_config_table(&mut monitor_info, &table);
+
+                    if isagent {
+                        info!("reading process informations");
+                        rsiotmonitor::read_process_informations_from_config_table(
+                            &mut monitor_info,
+                            &table,
+                        )
+                    }
 
                     // if this is an agent, add the additional elements
                     m.push(monitor_info);
@@ -181,27 +116,31 @@ async fn wait_1s() -> Result<()> {
     Ok(())
 }
 
-async fn subscribe_and_run(config: &mut Config, client: &mut Client) -> Result<()> {
-    let subopts = SubscribeOpts::new(
-        config
-            .monitored_devices
-            .iter()
-            .flat_map(|t| {
-                t.1.watch_topics.iter().map(|e| SubscribeTopic {
-                    qos: int_to_qos(1),
-                    topic_path: e.clone(),
-                })
-            })
-            .collect(),
-    );
+async fn subscribe_and_run(config: &Arc<RwLock<Config>>, client: &mut Client) -> Result<()> {
+    {
+        let config_ref = config.write().unwrap();
 
-    let subres = client.subscribe(subopts).await?;
-    subres.any_failures()?;
+        let subopts = SubscribeOpts::new(
+            config_ref
+                .monitored_devices
+                .iter()
+                .flat_map(|t| {
+                    t.1.watch_topics.iter().map(|e| SubscribeTopic {
+                        qos: int_to_qos(1),
+                        topic_path: e.clone(),
+                    })
+                })
+                .collect(),
+        );
+
+        let subres = client.subscribe(subopts).await?;
+        subres.any_failures()?;
+    } // lock section
 
     loop {
         let r = client.read_subscriptions().await;
 
-        println!("Read r={:?}", r);
+        debug!("Read r={:?}", r);
 
         if let Err(Error::Disconnected) = r {
             return Err(Error::Disconnected);
@@ -210,36 +149,41 @@ async fn subscribe_and_run(config: &mut Config, client: &mut Client) -> Result<(
 }
 
 async fn start() -> Result<()> {
-    let mut config = read_configuration().await?;
+    let config = read_configuration().await?;
     println!("config : {:?}\n", &config);
 
-    let mut client = match client_from_args(&config) {
+    let config_mqtt = config.mqtt_config.clone();
+
+    let mut client = match client_from_args(&config_mqtt) {
         Ok(client) => client,
         Err(e) => panic!("{}", e),
     };
 
-    // main loop
+    let mut config_mqtt_watchdoc = config.mqtt_config.clone();
+    let config_ref = Arc::new(RwLock::new(config));
+
+    // main loop, reconnect
     loop {
         let conn_result = client.connect().await;
         if let Ok(ok_result) = conn_result {
             println!("connected : {:?}\n", ok_result);
 
-            let mut config_watchdog = read_configuration().await?;
-            if let Some(clientid) = config_watchdog.client_id {
-
-                config_watchdog.client_id = Some(clientid + "_outbounds".into());
-                let mut client2 = match client_from_args(&config_watchdog) {
+            if let Some(clientid) = config_mqtt_watchdoc.client_id {
+                config_mqtt_watchdoc.client_id = Some(clientid + "_outbounds".into());
+                let mut client2 = match client_from_args(&config_mqtt_watchdoc) {
                     Ok(client) => client,
-                    Err(e) => panic!("{}", e),
+                    Err(e) => panic!("{}", e), // cannot connect twice
                 };
 
+                let config_ref_check = config_ref.clone();
+
                 client2.connect().await.unwrap();
-
                 tokio::spawn(async move {
-
+                    debug!("start watchdog");
                     let c = client2;
 
                     loop {
+                        debug!("send hello");
                         let mut p = PublishOpts::new(
                             "hello".into(),
                             format!("{:?}", SystemTime::now()).as_bytes().to_vec(),
@@ -248,25 +192,46 @@ async fn start() -> Result<()> {
                         p.set_retain(false);
 
                         if let Err(e) = c.publish(&p).await {
-                            warn!("error in publishing the health check");                            
+                            warn!("error in publishing the health check");
                         }
 
+                        // check processes
+                        {
+                            let mut c = config_ref_check.write().unwrap();
+                            for entries in c.monitored_devices.iter_mut() {
+                                let name = entries.0;
+                                let info = entries.1.as_mut();
+
+                                if let Some(additional_infos) =
+                                    info.associated_process_information.as_deref_mut()
+                                {
+                                    if let Some(pid) = additional_infos.pid {
+                                        if let Ok(_pinfo) = process::get_process_information(pid) {
+                                            continue;
+                                        }
+                                    }
+
+                                    debug!("launching process {}",&additional_infos.exec);
+                                    process::fork_process(name, additional_infos).unwrap();
+                                    additional_infos.restartedCount += 1;
+                                }
+                            }
+                        }
                         wait_1s().await;
                     }
                 });
 
-                if let Err(e) = subscribe_and_run(&mut config, &mut client).await {
+                if let Err(e) = subscribe_and_run(&config_ref, &mut client).await {
                     error!("{}", e);
                     break;
                 }
-
             } else {
                 client.disconnect().await;
             }
         } else {
-            println!("error in connection : {:?}\n", conn_result);
+            error!("error in connection : {:?}\n", conn_result);
         }
-
+        // wait 1s before retry to reconnect
         wait_1s().await;
     }
 
@@ -279,8 +244,7 @@ async fn main() {
     start().await.unwrap();
 }
 
-
-fn client_from_args(args: &Config) -> Result<Client> {
+fn client_from_args(args: &MqttConfig) -> Result<Client> {
     let mut b = Client::builder();
     b.set_url_string(&args.url)?
         .set_username(args.username.clone())
