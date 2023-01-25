@@ -33,7 +33,3 @@ opt-level = "z"  # Optimize for size.
 codegen-units = 1
 panic = "abort"
 lto = true
-
-[build]
-rustflags = ["-C", "target-feature=+crt-static"]
-target = "x86_64-unknown-linux-gnu"

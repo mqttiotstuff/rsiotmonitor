@@ -5,7 +5,7 @@
 use futures_util::stream::{futures_unordered::FuturesUnordered, StreamExt};
 
 #[allow(unused_imports)]
-use log::{debug, warn , error, info, trace};
+use log::{debug, error, info, trace, warn};
 use mqtt_async_client::{
     client::{
         Client, KeepAlive, Publish as PublishOpts, QoS, Subscribe as SubscribeOpts, SubscribeTopic,
@@ -24,9 +24,10 @@ use tokio::time::Duration;
 #[cfg(feature = "tls")]
 use webpki_roots;
 
-use rsiotmonitor::*;
+use rsiotmonitor::{process::ProcessIterator, *};
 use std::{
     collections::HashMap,
+    ops::Index,
     sync::{Arc, RwLock},
     time::SystemTime,
 };
@@ -149,8 +150,46 @@ async fn subscribe_and_run(config: &Arc<RwLock<Config>>, client: &mut Client) ->
 }
 
 async fn start() -> Result<()> {
-    let config = read_configuration().await?;
-    println!("config : {:?}\n", &config);
+    let mut config = read_configuration().await?;
+    debug!("config : {:?}\n", &config);
+
+    // TODO refactor this
+    const MAGIC: &str = "IOTMONITORMAGIC";
+    let MAGICPROCSSHEADER: String = String::from(MAGIC) + "_";
+
+    // get the already running processes
+    let pi = ProcessIterator::new().unwrap();
+    for p in pi {
+        for e in p.commmand_line_elements {
+            // println!("evaluate {}",e);
+            if e.contains(&MAGICPROCSSHEADER) {
+                debug!("found pattern evaluate {}", e);
+                match e.find(&MAGICPROCSSHEADER) {
+                    Some(idx1) => {
+                        let s = &e[idx1 + MAGICPROCSSHEADER.len()..];
+                        match s.find(";") {
+                            Some(idx2) => {
+                                let name = String::from(&s[0..idx2]);
+                                debug!("{} found", &name);
+                                match config.monitored_devices.get_mut(&name) {
+                                    Some(mi) => match &mut mi.associated_process_information {
+                                        Some(api) => {
+                                            api.pid = Some(p.pid);
+                                            info!("process attached with pid {}", p.pid);
+                                        }
+                                        None => {}
+                                    },
+                                    None => {}
+                                }
+                            }
+                            None => {}
+                        }
+                    }
+                    None => {}
+                }
+            }
+        }
+    }
 
     let config_mqtt = config.mqtt_config.clone();
 
@@ -166,7 +205,7 @@ async fn start() -> Result<()> {
     loop {
         let conn_result = client.connect().await;
         if let Ok(ok_result) = conn_result {
-            println!("connected : {:?}\n", ok_result);
+            info!("connected : {:?}\n", ok_result);
 
             if let Some(clientid) = config_mqtt_watchdoc.client_id {
                 config_mqtt_watchdoc.client_id = Some(clientid + "_outbounds".into());
@@ -211,7 +250,7 @@ async fn start() -> Result<()> {
                                         }
                                     }
 
-                                    debug!("launching process {}",&additional_infos.exec);
+                                    debug!("launching process {}", &additional_infos.exec);
                                     process::fork_process(name, additional_infos).unwrap();
                                     additional_infos.restartedCount += 1;
                                 }

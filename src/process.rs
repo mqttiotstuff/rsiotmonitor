@@ -6,6 +6,7 @@ use std::process::Stdio;
 
 use log::{debug, info};
 use mqtt_async_client::Result;
+use nix::unistd::setsid;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 
@@ -43,10 +44,12 @@ pub fn get_process_information(pid: u32) -> Result<ProcessInformation> {
 }
 
 /// iterator for browsing the processes
-struct ProcessIterator {
+pub struct ProcessIterator {
+    /// current elements in the iterator browsing
     elements: Box<ReadDir>,
 }
 
+/// process iterator to watch the running processes
 impl ProcessIterator {
     pub fn new() -> Result<ProcessIterator> {
         let dir: &Path = Path::new("/proc");
@@ -63,14 +66,13 @@ impl ProcessIterator {
             let filetype = d.file_type();
             if let Ok(ft) = filetype {
                 if FileType::is_dir(&ft) {
-                    let numberResult = String::from(filename_string).parse::<u32>();
-                    if let Ok(pid) = numberResult {
+                    let number_result = String::from(filename_string).parse::<u32>();
+                    if let Ok(pid) = number_result {
                         let pi = get_process_information(pid).unwrap();
                         return Some(pi);
                     }
                 }
             }
-
             None
         } else {
             None
@@ -107,7 +109,7 @@ pub fn fork_process(name: &String, processinfo: &mut AdditionalProcessInformatio
     let MAGICPROCSSHEADER: String = String::from(MAGIC) + "_";
 
     use nix::sys::signal::*;
-    use nix::unistd::{execv, fork, write, ForkResult};
+    use nix::unistd::{execv, fork, ForkResult};
     match unsafe { fork() } {
         Ok(ForkResult::Parent { child, .. }) => {
             let u: i32 = child.into();
@@ -131,6 +133,10 @@ pub fn fork_process(name: &String, processinfo: &mut AdditionalProcessInformatio
                 &CString::new("-c").unwrap(),
                 &CString::new(exec.clone()).unwrap(),
             ];
+
+            // dissociate from its parent
+            setsid();
+            // replace the process
             execv(&CString::new("/bin/bash").unwrap(), args);
             return Ok(());
         }
