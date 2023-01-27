@@ -3,11 +3,16 @@
 ///
 pub mod process;
 
+pub mod state;
+
 use std::{
     collections::HashMap,
+    sync::Arc,
     time::{Duration, SystemTime},
 };
 
+use derivative::Derivative;
+use log::debug;
 use toml_parse::Value;
 
 /// Mqtt connection properties and configuration
@@ -52,9 +57,13 @@ pub struct MqttConfig {
 }
 
 /// General iotmonitor configuration, with mqtt configuration and monitored device or agents
-#[derive(Debug)]
+#[derive(Derivative)]
+#[derivative(Debug)]
 pub struct Config {
     pub mqtt_config: MqttConfig,
+
+    #[derivative(Debug = "ignore")]
+    pub state_connection: Option<Arc<sqlite::ConnectionWithFullMutex>>,
 
     /// monitored elements
     pub monitored_devices: HashMap<String, Box<MonitoringInfo>>,
@@ -86,7 +95,7 @@ pub struct MonitoringInfo {
     /// next contact time
     pub next_contact: Option<SystemTime>,
     /// timeout after the device is considered as non responding
-    pub timeout_value: u32,
+    pub timeout_value: Duration,
     /// associated mqtt state topic, to record the device state
     pub state_topic: Option<String>,
     /// hello topic, signaling the device is newly activated
@@ -96,6 +105,9 @@ pub struct MonitoringInfo {
     /// for agent this property hold the additional informations
     /// used for process launched or relaunched
     pub associated_process_information: Option<Box<AdditionalProcessInformation>>,
+
+    /// count of the hello topic watched
+    pub hello_count: u32,
 }
 
 /// monitoring information functions
@@ -107,9 +119,10 @@ impl MonitoringInfo {
             associated_process_information: None,
             enabled: true,
             hello_topic: None,
-            timeout_value: 30,
+            timeout_value: Duration::from_secs(30),
             next_contact: None,
             state_topic: None,
+            hello_count: 0,
         };
 
         Box::new(b)
@@ -122,8 +135,7 @@ impl MonitoringInfo {
     pub fn has_expired(self: &Self) -> bool {
         if let Some(next_time) = self.next_contact {
             let current_time = SystemTime::now();
-            let expired: bool =
-                current_time > next_time + Duration::from_secs(self.timeout_value.into());
+            let expired: bool = current_time > next_time + self.timeout_value;
             expired
         } else {
             false
@@ -140,10 +152,25 @@ pub fn update_monitorinfo_from_config_table(
         if let Some(keyname) = kv.key() {
             match kv.value() {
                 Value::StrLit(s) => {
+                    // watchTimeOut : watch dog for alive state, when the timeout is reached without and interactions on watchTopics, then iotmonitor trigger an expire message for the device
+                    // helloTopic : the topic to observe to welcome the device. This topic trigger the state recovering for the device and agents. IotMonitor, resend the previous stored stateTopics
+                    // watchTopics : the topic pattern to observe to know the device is alive
+                    // stateTopics : list of topics for recording the states and reset them as they are welcomed
+
                     if keyname == "watchTopics" {
                         let mut topicList = Vec::new();
                         topicList.push(s.clone());
                         monitor_info.watch_topics = topicList;
+                    } else if keyname == "stateTopics" {
+                        monitor_info.state_topic = Some(s.clone());
+                    } else if keyname == "helloTopic" {
+                        monitor_info.hello_topic = Some(s.clone());
+                    } else if keyname == "watchTimeOut" {
+                        let d = s.parse::<u64>().unwrap();
+                        let duration = Duration::from_secs(d);
+                        monitor_info.timeout_value = duration;
+                    } else {
+                        debug!("unknown key {}", &keyname);
                     }
                 }
                 _ => (),

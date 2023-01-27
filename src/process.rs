@@ -1,6 +1,5 @@
 use std::ffi::{CStr, CString};
 use std::fs::{read_dir, DirEntry, File, FileType, ReadDir};
-use std::os::unix;
 use std::path::Path;
 use std::process::Stdio;
 
@@ -105,7 +104,8 @@ fn test_iterator() {
     }
 }
 
-pub fn fork_process(name: &String, processinfo: &mut AdditionalProcessInformation) -> Result<()> {
+/// create the process
+pub fn run_process_with_fork(name: &String, processinfo: &mut AdditionalProcessInformation) -> Result<()> {
     let MAGICPROCSSHEADER: String = String::from(MAGIC) + "_";
 
     use nix::sys::signal::*;

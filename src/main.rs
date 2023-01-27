@@ -15,6 +15,7 @@ use mqtt_async_client::{
 
 #[cfg(feature = "tls")]
 use rustls;
+use sqlite::ConnectionWithFullMutex;
 #[cfg(feature = "tls")]
 use std::io::Cursor;
 
@@ -27,20 +28,14 @@ use webpki_roots;
 use rsiotmonitor::{process::ProcessIterator, *};
 use std::{
     collections::HashMap,
-    ops::Index,
+    ops::{Deref, Index},
     sync::{Arc, RwLock},
     time::SystemTime,
 };
 
 use toml_parse::*;
 
-/// check all the processes are properly running
-pub async fn check_running_processes(config: &mut Config) -> Result<()> {
-    // browsing and getting all running processes
-
-    Ok(())
-}
-
+/// read configuration from config.toml
 async fn read_configuration() -> Result<Config> {
     let mut config = Config {
         mqtt_config: MqttConfig {
@@ -57,6 +52,7 @@ async fn read_configuration() -> Result<Config> {
             op_timeout: 10,
         },
         monitored_devices: HashMap::new(),
+        state_connection: None,
     };
 
     use std::fs;
@@ -117,6 +113,19 @@ async fn wait_1s() -> Result<()> {
     Ok(())
 }
 
+/**
+ * does the evaluated topic contains the tested_topic match
+ */
+fn does_topic_match(tested_topic: &String, evaluated_topic: &String) -> bool {
+    let mut tested = tested_topic.clone();
+    if tested_topic.ends_with("#") {
+        tested = (tested[0..tested.len()]).to_string();
+    }
+
+    evaluated_topic.starts_with(&tested)
+}
+
+
 async fn subscribe_and_run(config: &Arc<RwLock<Config>>, client: &mut Client) -> Result<()> {
     {
         let config_ref = config.write().unwrap();
@@ -138,6 +147,7 @@ async fn subscribe_and_run(config: &Arc<RwLock<Config>>, client: &mut Client) ->
         subres.any_failures()?;
     } // lock section
 
+    // events loop
     loop {
         let r = client.read_subscriptions().await;
 
@@ -146,16 +156,75 @@ async fn subscribe_and_run(config: &Arc<RwLock<Config>>, client: &mut Client) ->
         if let Err(Error::Disconnected) = r {
             return Err(Error::Disconnected);
         }
+
+        let result = r.unwrap();
+        let topic = result.topic().to_string();
+        let payload = result.payload();
+
+        {
+            let mut config_ref = config.read().unwrap();
+            let connection = &config_ref.state_connection.to_owned();
+            for (_name, c) in config_ref.monitored_devices.iter() {
+                // hello
+                if let Some(hello_topic) = c.hello_topic.clone() {
+                    if does_topic_match(&hello_topic, &topic) {
+                        // c.hello_count += 1;
+
+                        match &c.state_topic {
+                            Some(state_topic) => {
+                                // send state associated to mqtt if exists
+                                match connection {
+                                    Some(conn) => {
+                                        let state_result = state::read_state(conn, &state_topic);
+                                        if let Ok(s) = state_result {
+                                            let mut p = PublishOpts::new(state_topic.into(), s);
+                                            p.set_qos(int_to_qos(1));
+                                            p.set_retain(false);
+
+                                            // async publish
+                                            client.publish(&p);
+                                        }
+                                    }
+                                    _ => {}
+                                };
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+
+                if let Some(state_topic) = c.state_topic.clone() {
+                    if does_topic_match(&state_topic, &topic) {
+                        match connection {
+                            Some(c) => {
+                                // send state associated to the
+                                debug!("save state for {}", &state_topic);
+                                if let Err(save_error) = state::save_state(c, &topic, &payload) {
+                                    warn!(
+                                        "error in saving the state for {} : {}",
+                                        _name, save_error
+                                    );
+                                }
+                            }
+                            _ => {}
+                        };
+                    }
+                }
+            }
+        }
     }
 }
 
-async fn start() -> Result<()> {
-    let mut config = read_configuration().await?;
-    debug!("config : {:?}\n", &config);
-
+/// look for already running process to get theirs associated pid
+/// and be able to check for alive process
+fn wrap_already_exists_processes(config: Config) -> Config {
     // TODO refactor this
+    debug!("start checking already exists processes");
+
     const MAGIC: &str = "IOTMONITORMAGIC";
     let MAGICPROCSSHEADER: String = String::from(MAGIC) + "_";
+
+    let mut c: Config = config;
 
     // get the already running processes
     let pi = ProcessIterator::new().unwrap();
@@ -171,7 +240,7 @@ async fn start() -> Result<()> {
                             Some(idx2) => {
                                 let name = String::from(&s[0..idx2]);
                                 debug!("{} found", &name);
-                                match config.monitored_devices.get_mut(&name) {
+                                match c.monitored_devices.get_mut(&name) {
                                     Some(mi) => match &mut mi.associated_process_information {
                                         Some(api) => {
                                             api.pid = Some(p.pid);
@@ -190,16 +259,30 @@ async fn start() -> Result<()> {
             }
         }
     }
+    debug!("end of checking already exists processes");
+    c
+}
 
-    let config_mqtt = config.mqtt_config.clone();
+/// start method
+async fn start(config: Config) -> Result<()> {
+    // search for existing processes, and wrap their declaration
+
+    let mut populated_config = wrap_already_exists_processes(config);
+
+    let config_mqtt = populated_config.mqtt_config.clone();
 
     let mut client = match client_from_args(&config_mqtt) {
         Ok(client) => client,
         Err(e) => panic!("{}", e),
     };
 
-    let mut config_mqtt_watchdoc = config.mqtt_config.clone();
-    let config_ref = Arc::new(RwLock::new(config));
+    info!("opening database");
+    populated_config.state_connection = Some(Arc::new(state::init().unwrap()));
+
+    let mut config_mqtt_watchdoc = populated_config.mqtt_config.clone();
+
+    let rw: RwLock<Config> = RwLock::new(populated_config);
+    let config_ref = Arc::new(rw);
 
     // main loop, reconnect
     loop {
@@ -251,7 +334,7 @@ async fn start() -> Result<()> {
                                     }
 
                                     debug!("launching process {}", &additional_infos.exec);
-                                    process::fork_process(name, additional_infos).unwrap();
+                                    process::run_process_with_fork(name, additional_infos).unwrap();
                                     additional_infos.restartedCount += 1;
                                 }
                             }
@@ -265,7 +348,10 @@ async fn start() -> Result<()> {
                     break;
                 }
             } else {
-                client.disconnect().await;
+                let disconnect_result = client.disconnect().await;
+                if let Err(e) = disconnect_result {
+                    warn!("error in disconnecting : {} , continue", e);
+                }
             }
         } else {
             error!("error in connection : {:?}\n", conn_result);
@@ -277,13 +363,45 @@ async fn start() -> Result<()> {
     Ok(())
 }
 
+#[derive(Debug, StructOpt)]
+#[structopt(name = "rsiotmonitor", about = "Command line arguments")]
+struct Opt {
+    /// Activate debug mode
+    // short and long flags (-d, --debug) will be deduced from the field's name
+    #[structopt(long)]
+    debug: bool,
+
+    #[structopt(long)]
+    disable: Option<String>,
+
+    #[structopt(long)]
+    enable: Option<String>,
+}
+
+/// main procedure
 #[tokio::main]
 async fn main() {
     env_logger::init();
-    start().await.unwrap();
+
+    let opt = Opt::from_args();
+
+    let mut config = read_configuration().await.unwrap();
+    debug!("config : {:?}\n", &config);
+
+    if let Some(name) = opt.enable {
+        // enable the element
+    }
+
+    if let Some(name) = opt.disable {
+        // disable the element
+    }
+
+    start(config).await.unwrap();
 }
 
+/// create a mqtt client using config properties
 fn client_from_args(args: &MqttConfig) -> Result<Client> {
+    debug!("create client for parameters : {:?}", args);
     let mut b = Client::builder();
     b.set_url_string(&args.url)?
         .set_username(args.username.clone())
@@ -347,6 +465,7 @@ fn client_from_args(args: &MqttConfig) -> Result<Client> {
     b.build()
 }
 
+/// convert integer to QOS enum
 fn int_to_qos(qos: u8) -> QoS {
     match qos {
         0 => QoS::AtMostOnce,
