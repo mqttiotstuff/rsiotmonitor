@@ -1,5 +1,6 @@
 // use futures_core::future;
 
+use futures_util::future::try_join_all;
 #[allow(unused_imports)]
 // #![deny(warnings)]
 use futures_util::stream::{futures_unordered::FuturesUnordered, StreamExt};
@@ -10,33 +11,38 @@ use mqtt_async_client::{
     client::{
         Client, KeepAlive, Publish as PublishOpts, QoS, Subscribe as SubscribeOpts, SubscribeTopic,
     },
-    Error, Result,
+    Error,
 };
 
+use mqtt_v5_broker::{
+    broker::{Broker, BrokerMessage},
+    client,
+};
 #[cfg(feature = "tls")]
 use rustls;
-use sqlite::ConnectionWithFullMutex;
 #[cfg(feature = "tls")]
 use std::io::Cursor;
 
 use structopt::StructOpt;
 
-use tokio::time::Duration;
+use tokio::{net::TcpListener, time::Duration};
 #[cfg(feature = "tls")]
 use webpki_roots;
 
 use rsiotmonitor::{process::ProcessIterator, *};
 use std::{
+    borrow::Borrow,
     collections::HashMap,
+    io,
     ops::{Deref, Index},
-    sync::{Arc, RwLock},
+    sync::{mpsc::Sender, Arc, RwLock},
     time::SystemTime,
 };
 
 use toml_parse::*;
 
 /// read configuration from config.toml
-async fn read_configuration() -> Result<Config> {
+async fn read_configuration() -> mqtt_async_client::Result<Config> {
     let mut config = Config {
         mqtt_config: MqttConfig {
             username: None,
@@ -108,8 +114,8 @@ async fn read_configuration() -> Result<Config> {
     Ok(config)
 }
 
-async fn wait_1s() -> Result<()> {
-    tokio::time::sleep(Duration::from_secs(1)).await;
+async fn wait_2s() -> mqtt_async_client::Result<()> {
+    tokio::time::sleep(Duration::from_secs(2)).await;
     Ok(())
 }
 
@@ -119,14 +125,38 @@ async fn wait_1s() -> Result<()> {
 fn does_topic_match(tested_topic: &String, evaluated_topic: &String) -> bool {
     let mut tested = tested_topic.clone();
     if tested_topic.ends_with("#") {
-        tested = (tested[0..tested.len()]).to_string();
+        tested = (tested[0..tested.len() - 1]).to_string();
     }
 
     evaluated_topic.starts_with(&tested)
 }
 
+#[test]
+fn test_does_topic_match() {
+    assert_eq!(
+        does_topic_match(&"home".to_string(), &"home/toto".to_string()),
+        true
+    );
+    assert_eq!(
+        does_topic_match(&"home/#".to_string(), &"home/toto".to_string()),
+        true
+    );
+    assert_eq!(
+        does_topic_match(&"toto".to_string(), &"tutu".to_string()),
+        false
+    );
 
-async fn subscribe_and_run(config: &Arc<RwLock<Config>>, client: &mut Client) -> Result<()> {
+    assert_eq!(does_topic_match(&"".to_string(), &"tutu".to_string()), true);
+    assert_eq!(
+        does_topic_match(&"#".to_string(), &"tutu".to_string()),
+        true
+    );
+}
+
+async fn subscribe_and_run(
+    config: &Arc<RwLock<Config>>,
+    client: &mut Client,
+) -> mqtt_async_client::Result<()> {
     {
         let config_ref = config.write().unwrap();
 
@@ -162,9 +192,9 @@ async fn subscribe_and_run(config: &Arc<RwLock<Config>>, client: &mut Client) ->
         let payload = result.payload();
 
         {
-            let mut config_ref = config.read().unwrap();
+            let mut config_ref = config.write().unwrap();
             let connection = &config_ref.state_connection.to_owned();
-            for (_name, c) in config_ref.monitored_devices.iter() {
+            for (_name, c) in config_ref.monitored_devices.iter_mut() {
                 // hello
                 if let Some(hello_topic) = c.hello_topic.clone() {
                     if does_topic_match(&hello_topic, &topic) {
@@ -193,12 +223,13 @@ async fn subscribe_and_run(config: &Arc<RwLock<Config>>, client: &mut Client) ->
                     }
                 }
 
+                // state
                 if let Some(state_topic) = c.state_topic.clone() {
                     if does_topic_match(&state_topic, &topic) {
                         match connection {
                             Some(c) => {
                                 // send state associated to the
-                                debug!("save state for {}", &state_topic);
+                                debug!("saving state for {}", &topic);
                                 if let Err(save_error) = state::save_state(c, &topic, &payload) {
                                     warn!(
                                         "error in saving the state for {} : {}",
@@ -208,6 +239,13 @@ async fn subscribe_and_run(config: &Arc<RwLock<Config>>, client: &mut Client) ->
                             }
                             _ => {}
                         };
+                    }
+                }
+
+                // update watch topics
+                for watch_topics in &c.watch_topics {
+                    if does_topic_match(&watch_topics, &topic) {
+                        c.next_contact = Some(SystemTime::now() + c.timeout_value);
                     }
                 }
             }
@@ -263,11 +301,16 @@ fn wrap_already_exists_processes(config: Config) -> Config {
     c
 }
 
+use chrono::offset::Utc;
+use chrono::DateTime;
+
 /// start method
-async fn start(config: Config) -> Result<()> {
+async fn start(config: Config) -> mqtt_async_client::Result<()> {
     // search for existing processes, and wrap their declaration
 
     let mut populated_config = wrap_already_exists_processes(config);
+
+    let base_topic = populated_config.mqtt_config.base_topic.clone();
 
     let config_mqtt = populated_config.mqtt_config.clone();
 
@@ -300,27 +343,35 @@ async fn start(config: Config) -> Result<()> {
                 let config_ref_check = config_ref.clone();
 
                 client2.connect().await.unwrap();
+                let l_base_topic = base_topic.clone();
                 tokio::spawn(async move {
                     debug!("start watchdog");
-                    let c = client2;
+                    let cnx_mqtt = client2;
 
                     loop {
+                        // each check epoch
                         debug!("send hello");
+                        let datetime: DateTime<Utc> = SystemTime::now().into();
                         let mut p = PublishOpts::new(
-                            "hello".into(),
-                            format!("{:?}", SystemTime::now()).as_bytes().to_vec(),
+                             format!("{}/alive", l_base_topic),
+                            format!("{}", datetime.format("%d/%m/%Y %T")).as_bytes().to_vec(),
                         );
                         p.set_qos(int_to_qos(1));
                         p.set_retain(false);
 
-                        if let Err(e) = c.publish(&p).await {
-                            warn!("error in publishing the health check");
+                        if let Err(e) = cnx_mqtt.publish(&p).await {
+                            warn!("error in publishing the health check : {}", e);
                         }
+
+                        let mut expired: Vec<String> = vec![];
 
                         // check processes
                         {
-                            let mut c = config_ref_check.write().unwrap();
-                            for entries in c.monitored_devices.iter_mut() {
+                            let current_time = SystemTime::now();
+
+                            let mut conf = config_ref_check.write().unwrap();
+
+                            for entries in conf.monitored_devices.iter_mut() {
                                 let name = entries.0;
                                 let info = entries.1.as_mut();
 
@@ -337,9 +388,38 @@ async fn start(config: Config) -> Result<()> {
                                     process::run_process_with_fork(name, additional_infos).unwrap();
                                     additional_infos.restartedCount += 1;
                                 }
+
+                                debug!("check next contact");
+                                if let Some(next_contact) = info.next_contact {
+                                    if next_contact < current_time {
+                                        info!("time out for {}", info.name);
+
+                                        // send the expired elements
+                                        expired.push(name.clone());
+                                    }
+                                }
+                            } // loop
+                        }
+
+                        if !expired.is_empty() {
+                            for name in expired.iter() {
+                                let datetime: DateTime<Utc> = SystemTime::now().into();
+
+                                let mut pexpired = PublishOpts::new(
+                                    format!("{}/expired/{}", l_base_topic.to_string(), name),
+                                    format!("{}", datetime.format("%d/%m/%Y %T")).as_bytes().to_vec(),
+                                );
+                                pexpired.set_qos(int_to_qos(1));
+                                pexpired.set_retain(false);
+
+                                let publish_result = cnx_mqtt.publish(&pexpired).await;
+                                if let Err(e) = publish_result {
+                                    warn!("error in publishing the health check");
+                                }
                             }
                         }
-                        wait_1s().await;
+
+                        wait_2s().await;
                     }
                 });
 
@@ -357,7 +437,7 @@ async fn start(config: Config) -> Result<()> {
             error!("error in connection : {:?}\n", conn_result);
         }
         // wait 1s before retry to reconnect
-        wait_1s().await;
+        wait_2s().await;
     }
 
     Ok(())
@@ -378,14 +458,65 @@ struct Opt {
     enable: Option<String>,
 }
 
+/// Bind tcp address TODO: make this configurable
+const TCP_LISTENER_ADDR: &str = "0.0.0.0:1884";
+
+/// Websocket tcp address TODO: make this configurable
+const WEBSOCKET_TCP_LISTENER_ADDR: &str = "0.0.0.0:8088";
+
+async fn tcp_server_loop(broker_tx: tokio::sync::mpsc::Sender<BrokerMessage>) -> io::Result<()> {
+    info!("Listening on {}", TCP_LISTENER_ADDR);
+    let listener = TcpListener::bind(TCP_LISTENER_ADDR).await?;
+
+    loop {
+        let (stream, addr) = listener.accept().await?;
+        debug!("Client {} connected (tcp)", addr);
+        client::spawn(stream, broker_tx.clone());
+    }
+}
+
+async fn websocket_server_loop(
+    broker_tx: tokio::sync::mpsc::Sender<BrokerMessage>,
+) -> io::Result<()> {
+    info!("Listening on {}", WEBSOCKET_TCP_LISTENER_ADDR);
+    let listener = TcpListener::bind(WEBSOCKET_TCP_LISTENER_ADDR).await?;
+
+    loop {
+        let (socket, addr) = listener.accept().await?;
+        debug!("Client {} connected (websocket)", addr);
+        client::spawn_websocket(socket, broker_tx.clone()).await;
+    }
+}
+
+async fn launch_mqtt_server() -> Result<(), Box<dyn std::error::Error>> {
+    let broker = Broker::new();
+    let broker_tx = broker.sender(); // : tokio::task::JoinHandle<Result(), _>
+    let broker = tokio::task::spawn(async {
+        broker.run().await;
+    });
+
+    let tcp_listener = tokio::task::spawn(tcp_server_loop(broker_tx.clone()));
+    let websocket_listener = tokio::task::spawn(websocket_server_loop(broker_tx));
+
+    // tcp_listener,
+    // ,  websocket_listener
+    try_join_all([broker]).await?;
+
+    Ok(())
+}
+
 /// main procedure
 #[tokio::main]
 async fn main() {
     env_logger::init();
 
+    let broker_spawn = tokio::spawn(async move {
+        launch_mqtt_server().await;
+    });
+
     let opt = Opt::from_args();
 
-    let mut config = read_configuration().await.unwrap();
+    let config = read_configuration().await.unwrap();
     debug!("config : {:?}\n", &config);
 
     if let Some(name) = opt.enable {
@@ -400,7 +531,7 @@ async fn main() {
 }
 
 /// create a mqtt client using config properties
-fn client_from_args(args: &MqttConfig) -> Result<Client> {
+fn client_from_args(args: &MqttConfig) -> mqtt_async_client::Result<Client> {
     debug!("create client for parameters : {:?}", args);
     let mut b = Client::builder();
     b.set_url_string(&args.url)?

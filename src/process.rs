@@ -106,6 +106,7 @@ fn test_iterator() {
 
 /// create the process
 pub fn run_process_with_fork(name: &String, processinfo: &mut AdditionalProcessInformation) -> Result<()> {
+    
     let MAGICPROCSSHEADER: String = String::from(MAGIC) + "_";
 
     use nix::sys::signal::*;
