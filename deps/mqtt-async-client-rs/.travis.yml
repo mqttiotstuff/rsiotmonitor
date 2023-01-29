@@ -1,0 +1,10 @@
+dist: bionic
+os: linux
+
+language: rust
+rust:
+ - stable
+ - beta
+ - nightly
+
+script: bin/travis_script

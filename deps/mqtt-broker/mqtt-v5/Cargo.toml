@@ -1,0 +1,22 @@
+[package]
+name = "mqtt-v5"
+description = "Rust types, encode/decode functions, and a tokio codec for MQTT V5"
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/bschwind/mqtt-broker"
+version = "0.2.0"
+authors = ["Brian Schwind <brianmschwind@gmail.com>"]
+edition = "2018"
+
+[features]
+default = ["codec", "websocket"]
+codec = ["tokio-util"]
+websocket = ["codec", "websocket-codec", "sha1", "base64"]
+
+[dependencies]
+bytes = "1"
+num_enum = "0.4"
+tokio-util = { optional = true, version = "0.7", features = ["codec"] }
+websocket-codec = { optional = true, version = "0.5" }
+sha1 = { optional = true, version = "0.6" }
+base64 = { optional = true, version = "0.11" }

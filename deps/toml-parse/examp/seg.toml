@@ -1,0 +1,6 @@
+[dependencies.alpha]
+version = "0.15"
+
+[dependencies."alpha.hello".last]
+# comment
+version = "0.15"

@@ -1,0 +1,9 @@
+[workspace]
+
+members = [
+    "mqtt-v5",
+    "mqtt-v5-broker"
+]
+
+[profile.release]
+opt-level = "z"  # Optimize for size.

@@ -1,0 +1,23 @@
+* WIP
+
+
+* Bugs
+
+
+* Enhancements
+
+** Automated tests
+*** Long packets, short packets
+** TLS
+*** Client certificate and key
+** Offline buffering
+*** Queue outbound publishes in progress and retry with dup=1 after reconnect.
+** Client connect sends clean session
+** Client connect sends last will
+** Local persistent buffering
+** High availablity: fail over to a list of servers on failure to connect
+** MQTT over WebSocket
+** Back pressure on write PID allocation?
+   At the moment we just return an error.
+** Publish QoS level 2 (exactly once)
+** Subscribe QoS level 2 (exactly once)

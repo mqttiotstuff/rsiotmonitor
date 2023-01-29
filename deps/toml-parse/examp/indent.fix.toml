@@ -1,0 +1,16 @@
+[workspace]
+members = [
+    "first",
+    "second",
+    "third",
+    "fourth",
+]
+
+# this is tabs not spaces
+authors = [
+	"Manish Goregaokar <manishsmail@gmail.com>",
+	"Andre Bogus <bogusandre@gmail.com>",
+	"Georg Brandl <georg@python.org>",
+	"Martin Carton <cartonmartin@gmail.com>",
+	"Oliver Schneider <clippy-iethah7aipeen8neex1a@oli-obk.de>"
+]
