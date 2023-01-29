@@ -1,30 +1,42 @@
 
-
-## cross compilation
-
-	 docker run -ti -v `pwd`:/code rscross cargo build
+# WORK IN PROGRESS - REPOSITORY
 
 
-target for old glibc
-
-info: downloading component 'rust-std' for 'armv7-unknown-linux-musleabihf'
+This is a rust implementation of the iotmonitor project. 
 
 
-X64 with static glibc
+
+## GNU eabihf cross compilation (on raspian manner)
+
+	# build the image
+	cd docker
+	docker build -t rscross .
+	cd ..
+
+	# cross compile
+	docker run -ti -v `pwd`:/code rscross cargo build
+
+
+	docker run --rm -ti -v `pwd`:/code rscross bash -c "cargo build --target=armv7-unknown-linux-gnueabihf"
+
+
+
+## X64 with static glibc
+
+Command line to statically compile glibc into the exe
 
 	RUSTFLAGS="-C target-feature=+crt-static" cargo build --target x86_64-unknown-linux-gnu
 
 
-Profiling
-
-	cargo run --features="profile-with-tracy" 
 
 
-GNU EABI COMPILE
 
-	docker run --rm -ti -v `pwd`:/code rscross bash -c "cargo build --target=armv7-unknown-linux-gnueabihf"
+### MUSL COMPILE EVALUATION 
 
-MUSL COMPILE
+
+	target for old glibc
+
+	info: downloading component 'rust-std' for 'armv7-unknown-linux-musleabihf'
 
 	install musl-dev musl-tools packages
 
