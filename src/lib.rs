@@ -110,6 +110,8 @@ pub struct MonitoringInfo {
     pub hello_count: u32,
 }
 
+const INITIAL_DELAY_FOR_CHECKING: u64 = 30;
+
 /// monitoring information functions
 impl MonitoringInfo {
     pub fn create(name: String) -> Box<MonitoringInfo> {
@@ -119,8 +121,8 @@ impl MonitoringInfo {
             associated_process_information: None,
             enabled: true,
             hello_topic: None,
-            timeout_value: Duration::from_secs(30),
-            next_contact: None,
+            timeout_value: Duration::from_secs(INITIAL_DELAY_FOR_CHECKING),
+            next_contact: Some(SystemTime::now() + Duration::from_secs(INITIAL_DELAY_FOR_CHECKING)),
             state_topic: None,
             hello_count: 0,
         };

@@ -25,7 +25,7 @@ use std::io::Cursor;
 
 use structopt::StructOpt;
 
-use tokio::{net::TcpListener, time::Duration};
+use tokio::{net::TcpListener, time::Duration, task::JoinHandle};
 #[cfg(feature = "tls")]
 use webpki_roots;
 
@@ -34,6 +34,7 @@ use std::{
     borrow::Borrow,
     collections::HashMap,
     io,
+    net::{Ipv6Addr, SocketAddrV6},
     ops::{Deref, Index},
     sync::{mpsc::Sender, Arc, RwLock},
     time::SystemTime,
@@ -83,6 +84,7 @@ async fn read_configuration() -> mqtt_async_client::Result<Config> {
                             isagent = true;
                         }
                     }
+
                     let mut monitor_info = MonitoringInfo::create(name);
 
                     rsiotmonitor::update_monitorinfo_from_config_table(&mut monitor_info, &table);
@@ -353,8 +355,10 @@ async fn start(config: Config) -> mqtt_async_client::Result<()> {
                         debug!("send hello");
                         let datetime: DateTime<Utc> = SystemTime::now().into();
                         let mut p = PublishOpts::new(
-                             format!("{}/alive", l_base_topic),
-                            format!("{}", datetime.format("%d/%m/%Y %T")).as_bytes().to_vec(),
+                            format!("{}/alive", l_base_topic),
+                            format!("{}", datetime.format("%d/%m/%Y %T"))
+                                .as_bytes()
+                                .to_vec(),
                         );
                         p.set_qos(int_to_qos(1));
                         p.set_retain(false);
@@ -407,7 +411,9 @@ async fn start(config: Config) -> mqtt_async_client::Result<()> {
 
                                 let mut pexpired = PublishOpts::new(
                                     format!("{}/expired/{}", l_base_topic.to_string(), name),
-                                    format!("{}", datetime.format("%d/%m/%Y %T")).as_bytes().to_vec(),
+                                    format!("{}", datetime.format("%d/%m/%Y %T"))
+                                        .as_bytes()
+                                        .to_vec(),
                                 );
                                 pexpired.set_qos(int_to_qos(1));
                                 pexpired.set_retain(false);
@@ -443,7 +449,7 @@ async fn start(config: Config) -> mqtt_async_client::Result<()> {
     Ok(())
 }
 
-#[derive(Debug, StructOpt)]
+#[derive(Debug, StructOpt, Clone)]
 #[structopt(name = "rsiotmonitor", about = "Command line arguments")]
 struct Opt {
     /// Activate debug mode
@@ -452,21 +458,24 @@ struct Opt {
     debug: bool,
 
     #[structopt(long)]
+    embeddedMqtt: bool,
+
+    #[structopt(long, default_value =  "0.0.0.0:1884")]
+    embeddedMqttBindOptions: String,
+
+    #[structopt(long)]
     disable: Option<String>,
 
     #[structopt(long)]
     enable: Option<String>,
 }
 
-/// Bind tcp address TODO: make this configurable
-const TCP_LISTENER_ADDR: &str = "0.0.0.0:1884";
 
-/// Websocket tcp address TODO: make this configurable
-const WEBSOCKET_TCP_LISTENER_ADDR: &str = "0.0.0.0:8088";
+async fn tcp_server_loop(broker_tx: tokio::sync::mpsc::Sender<BrokerMessage>, bind_options: String) -> io::Result<()> {
+    
+    info!("Listening on {}", bind_options);
 
-async fn tcp_server_loop(broker_tx: tokio::sync::mpsc::Sender<BrokerMessage>) -> io::Result<()> {
-    info!("Listening on {}", TCP_LISTENER_ADDR);
-    let listener = TcpListener::bind(TCP_LISTENER_ADDR).await?;
+    let listener = TcpListener::bind(bind_options).await?;
 
     loop {
         let (stream, addr) = listener.accept().await?;
@@ -475,10 +484,16 @@ async fn tcp_server_loop(broker_tx: tokio::sync::mpsc::Sender<BrokerMessage>) ->
     }
 }
 
+
+/// Websocket tcp address TODO: make this configurable
+const WEBSOCKET_TCP_LISTENER_ADDR: &str = "0.0.0.0:8088";
+
+
 async fn websocket_server_loop(
     broker_tx: tokio::sync::mpsc::Sender<BrokerMessage>,
 ) -> io::Result<()> {
     info!("Listening on {}", WEBSOCKET_TCP_LISTENER_ADDR);
+
     let listener = TcpListener::bind(WEBSOCKET_TCP_LISTENER_ADDR).await?;
 
     loop {
@@ -488,19 +503,27 @@ async fn websocket_server_loop(
     }
 }
 
-async fn launch_mqtt_server() -> Result<(), Box<dyn std::error::Error>> {
+async fn launch_mqtt_server(opt: Opt) -> Result<(), Box<dyn std::error::Error>> {
     let broker = Broker::new();
+
     let broker_tx = broker.sender(); // : tokio::task::JoinHandle<Result(), _>
     let broker = tokio::task::spawn(async {
         broker.run().await;
     });
 
-    let tcp_listener = tokio::task::spawn(tcp_server_loop(broker_tx.clone()));
-    let websocket_listener = tokio::task::spawn(websocket_server_loop(broker_tx));
+
+    let local_bind_option = opt.embeddedMqttBindOptions.clone();
+    let local_broker_tx = broker_tx.clone();
+    let tcp_listener = 
+        tokio::task::spawn(async move { 
+            tcp_server_loop(local_broker_tx.clone(), local_bind_option).await;} );
+
+    let websocket_listener = 
+        tokio::task::spawn(async move { websocket_server_loop(broker_tx).await;} );
 
     // tcp_listener,
     // ,  websocket_listener
-    try_join_all([broker]).await?;
+    try_join_all([broker, tcp_listener, websocket_listener]).await?;
 
     Ok(())
 }
@@ -510,15 +533,20 @@ async fn launch_mqtt_server() -> Result<(), Box<dyn std::error::Error>> {
 async fn main() {
     env_logger::init();
 
-    let broker_spawn = tokio::spawn(async move {
-        launch_mqtt_server().await;
-    });
-
     let opt = Opt::from_args();
+    let mut broker_spawn : JoinHandle<()>;
+    if opt.embeddedMqtt {
+        info!("starting embedded mqtt {}", opt.embeddedMqttBindOptions);
+        let cloned_opt = opt.clone();
+        broker_spawn = tokio::spawn(async move {
+            launch_mqtt_server(cloned_opt).await;
+        });
+    }
 
     let config = read_configuration().await.unwrap();
     debug!("config : {:?}\n", &config);
 
+    // todo, communicate with the rsiotmonitor instance and trigger
     if let Some(name) = opt.enable {
         // enable the element
     }
