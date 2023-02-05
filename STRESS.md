@@ -46,4 +46,31 @@ time for connect:     1.68ms      4.63ms      3.17ms       737us    63.00%
 time to 1st byte:     9.71ms     80.84ms     51.85ms     22.94ms    59.00%
 req/s           :      86.57       99.74       89.70        3.07    82.00%
 
+1 client, and 9000 requests :
+
+
+use@alexa:~/Téléchargements$ h2load -n9000 -c1 http://localhost:3000
+starting benchmark...
+spawning thread #0: 1 total client(s). 9000 total requests
+Application protocol: h2c
+progress: 10% done
+progress: 20% done
+progress: 30% done
+progress: 40% done
+progress: 50% done
+progress: 60% done
+progress: 70% done
+progress: 80% done
+progress: 90% done
+progress: 100% done
+
+finished in 4.11s, 2191.46 req/s, 85.64KB/s
+requests: 9000 total, 9000 started, 9000 done, 9000 succeeded, 0 failed, 0 errored, 0 timeout
+status codes: 9000 2xx, 0 3xx, 0 4xx, 0 5xx
+traffic: 351.70KB (360141) total, 17.67KB (18092) headers (space savings 95.33%), 96.68KB (99000) data
+                     min         max         mean         sd        +/- sd
+time for request:      376us     42.30ms       452us       446us    99.82%
+time for connect:      284us       284us       284us         0us   100.00%
+time to 1st byte:    42.62ms     42.62ms     42.62ms         0us   100.00%
+req/s           :    2191.59     2191.59     2191.59        0.00   100.00%
 
