@@ -446,7 +446,7 @@ async fn start(config: Config) -> mqtt_async_client::Result<()> {
 
                                     debug!("launching process {}", &additional_infos.exec);
                                     process::run_process_with_fork(name, additional_infos).unwrap();
-                                    additional_infos.restartedCount += 1;
+                                    additional_infos.restarted_count += 1;
                                 }
 
                                 debug!("check next contact");

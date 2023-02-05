@@ -80,10 +80,10 @@ pub struct AdditionalProcessInformation {
     pub exec: String,
 
     // last time the process is restarted
-    pub lastRestarted: Option<SystemTime>,
+    pub last_restarted: Option<SystemTime>,
 
     // number of time, the process is restarted
-    pub restartedCount: u64,
+    pub restarted_count: u64,
 }
 
 /// information about the monitored item (process or device)
@@ -189,9 +189,9 @@ pub fn read_process_informations_from_config_table(
 ) {
     let mut additional_process_info = AdditionalProcessInformation {
         exec: "".into(),
-        lastRestarted: None,
+        last_restarted: None,
         pid: None,
-        restartedCount: 0,
+        restarted_count: 0,
     };
 
     for kv in table.items() {
