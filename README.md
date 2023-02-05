@@ -46,3 +46,11 @@ Command line to statically compile glibc into the exe
 	CC=/usr/bin/musl-gcc cargo build --target=armv7-unknown-linux-musleabihf
 
 
+## profiling
+
+record the function timing , using perf
+
+	> perf record -F 99 -g <some-command-here>
+
+it create the perf.data file, with all symbols
+analyse it with the hotspot GUI (available in the distribution)

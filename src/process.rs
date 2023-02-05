@@ -116,7 +116,7 @@ pub fn run_process_with_fork(name: &String, processinfo: &mut AdditionalProcessI
             let u: i32 = child.into();
             let r: u32 = u.try_into().unwrap();
             processinfo.pid = Some(r);
-            info!("pid created : {}", r);
+            info!("pid created for {} : {}", &name,r);
             unsafe {
                 // avoid creating zombi when child exit
                 signal(Signal::SIGCHLD, SigHandler::SigIgn);
@@ -128,7 +128,7 @@ pub fn run_process_with_fork(name: &String, processinfo: &mut AdditionalProcessI
                 MAGICPROCSSHEADER + name,
                 processinfo.exec
             );
-            debug!("running {}", &exec);
+            debug!("running {} , {}",&name ,&exec);
             let args = &[
                 &CString::new("/bin/bash").unwrap(),
                 &CString::new("-c").unwrap(),
@@ -148,6 +148,7 @@ pub fn run_process_with_fork(name: &String, processinfo: &mut AdditionalProcessI
 
 /// launch the process with the IOTMONITORING tag
 pub fn launch_process(name: &String, processinfo: &mut AdditionalProcessInformation) -> Result<()> {
+    
     let MAGICPROCSSHEADER: String = String::from(MAGIC) + "_";
 
     let exec = format!(

@@ -579,7 +579,11 @@ async fn launch_mqtt_server(opt: Opt) -> Result<(), Box<dyn std::error::Error>> 
 
     // tcp_listener,
     // ,  websocket_listener
-    try_join_all([broker, tcp_listener, websocket_listener]).await?;
+
+    let http_server = tokio::task::spawn( 
+        async move { httpserver::server_start().await; } );
+
+    try_join_all([broker, tcp_listener, websocket_listener, http_server]).await?;
 
     Ok(())
 }

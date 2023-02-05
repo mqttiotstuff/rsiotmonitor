@@ -15,6 +15,8 @@ use derivative::Derivative;
 use log::debug;
 use toml_parse::Value;
 
+pub mod httpserver;
+
 /// Mqtt connection properties and configuration
 #[derive(Debug, Clone)]
 pub struct MqttConfig {
