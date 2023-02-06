@@ -11,7 +11,7 @@ use tokio::process::Command;
 
 use crate::AdditionalProcessInformation;
 
-const MAGIC: &str = "IOTMONITORMAGIC";
+pub const MAGIC: &str = "IOTMONITORMAGIC";
 
 #[derive(Debug)]
 pub struct ProcessInformation {
@@ -103,6 +103,7 @@ fn test_iterator() {
         println!("{:?}", &entry);
     }
 }
+
 
 /// create the process
 pub fn run_process_with_fork(name: &String, processinfo: &mut AdditionalProcessInformation) -> Result<()> {

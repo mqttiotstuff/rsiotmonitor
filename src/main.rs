@@ -42,6 +42,8 @@ use std::{
 
 use toml_parse::*;
 
+
+
 /// read configuration from config.toml
 async fn read_configuration() -> mqtt_async_client::Result<Config> {
     let mut config = Config {
@@ -160,11 +162,11 @@ fn test_does_topic_match() {
 }
 
 async fn subscribe_and_run(
-    config: &Arc<RwLock<Config>>,
+    config: &Arc<tokio::sync::RwLock<Config>>,
     client: &mut Client,
 ) -> mqtt_async_client::Result<()> {
     {
-        let config_ref = config.write().unwrap();
+        let config_ref = config.write().await;
 
         let mut subscribed_topics : Vec<SubscribeTopic>= config_ref
         .monitored_devices
@@ -243,7 +245,7 @@ async fn subscribe_and_run(
         let topic = result.topic().to_string();
         let payload = result.payload();
         {
-            let mut config_ref = config.write().unwrap();
+            let mut config_ref = config.write().await;
             let connection = &config_ref.state_connection.to_owned();
             for (_name, c) in config_ref.monitored_devices.iter_mut() {
                 // hello
@@ -317,8 +319,8 @@ fn wrap_already_exists_processes(config: Config) -> Config {
     // TODO refactor this
     debug!("start checking already exists processes");
 
-    const MAGIC: &str = "IOTMONITORMAGIC";
-    let MAGICPROCSSHEADER: String = String::from(MAGIC) + "_";
+    
+    let MAGICPROCSSHEADER: String = String::from(process::MAGIC) + "_";
 
     let mut c: Config = config;
 
@@ -382,7 +384,7 @@ async fn start(config: Config) -> mqtt_async_client::Result<()> {
 
     let mut config_mqtt_watchdoc = populated_config.mqtt_config.clone();
 
-    let rw: RwLock<Config> = RwLock::new(populated_config);
+    let rw: tokio::sync::RwLock<Config> = tokio::sync::RwLock::new(populated_config);
     let config_ref = Arc::new(rw);
 
     // main loop, reconnect
@@ -429,7 +431,7 @@ async fn start(config: Config) -> mqtt_async_client::Result<()> {
                         {
                             let current_time = SystemTime::now();
 
-                            let mut conf = config_ref_check.write().unwrap();
+                            let mut conf = config_ref_check.write().await;
 
                             for entries in conf.monitored_devices.iter_mut() {
                                 let name = entries.0;
