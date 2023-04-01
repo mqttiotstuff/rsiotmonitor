@@ -226,10 +226,9 @@ async fn subscribe_and_run(
 
 
 
+    } // lock section on config
 
-    } // lock section
-
-    // events loop
+    // events loop on subscription receive
     loop {
 
         // message received ?
@@ -364,6 +363,7 @@ fn wrap_already_exists_processes(config: Config) -> Config {
 use chrono::offset::Utc;
 use chrono::DateTime;
 
+
 /// start method
 async fn start(config: Config) -> mqtt_async_client::Result<()> {
     // search for existing processes, and wrap their declaration
@@ -403,10 +403,11 @@ async fn start(config: Config) -> mqtt_async_client::Result<()> {
                 let config_ref_check = config_ref.clone();
 
                 client2.connect().await.unwrap();
+
                 let l_base_topic = base_topic.clone();
                 tokio::spawn(async move {
                     debug!("start watchdog");
-                    let cnx_mqtt = client2;
+                    let mut cnx_mqtt = client2;
 
                     loop {
                         // each check epoch
@@ -423,6 +424,7 @@ async fn start(config: Config) -> mqtt_async_client::Result<()> {
 
                         if let Err(e) = cnx_mqtt.publish(&p).await {
                             warn!("error in publishing the health check : {}", e);
+                            break;
                         }
 
                         let mut expired: Vec<String> = vec![];
@@ -479,18 +481,24 @@ async fn start(config: Config) -> mqtt_async_client::Result<()> {
                                 let publish_result = cnx_mqtt.publish(&pexpired).await;
                                 if let Err(e) = publish_result {
                                     warn!("error in publishing the health check");
+                                    break;
                                 }
                             }
                         }
 
                         wait_2s().await;
                     }
+
+                    cnx_mqtt.disconnect().await;
                 });
 
                 if let Err(e) = subscribe_and_run(&config_ref, &mut client).await {
-                    error!("{}", e);
-                    break;
+                    error!("error from subscribe and run, {}", e);
+                    // try reconnecting
+                    // break;
+                    client.disconnect().await;
                 }
+
             } else {
                 let disconnect_result = client.disconnect().await;
                 if let Err(e) = disconnect_result {
@@ -502,7 +510,7 @@ async fn start(config: Config) -> mqtt_async_client::Result<()> {
         }
         // wait 1s before retry to reconnect
         wait_2s().await;
-    }
+    } // loop to reconnect
 
     Ok(())
 }

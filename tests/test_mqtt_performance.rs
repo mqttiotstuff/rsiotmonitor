@@ -29,7 +29,6 @@ async fn launch_mqtt_server() -> Result<(), Box<dyn std::error::Error>> {
         broker.run().await;
     });
 
-
     let local_bind_option = "0.0.0.0:1884".to_string();
     let local_broker_tx = broker_tx.clone();
     let tcp_listener = 
