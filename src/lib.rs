@@ -15,6 +15,8 @@ use derivative::Derivative;
 use log::debug;
 use toml_parse::Value;
 
+pub mod httpserver;
+
 /// Mqtt connection properties and configuration
 #[derive(Debug, Clone)]
 pub struct MqttConfig {
@@ -56,17 +58,58 @@ pub struct MqttConfig {
     pub op_timeout: u16,
 }
 
+impl Default for MqttConfig {
+    fn default() -> Self {
+        MqttConfig {
+            username: None,
+            password: None,
+            url: "".into(),
+            base_topic: "iotmonitor/monitoring".into(),
+            client_id: None,
+            tls_server_ca_file: None,
+            tls_mozilla_root_cas: false,
+            tls_client_crt_file: None,
+            tls_client_rsa_key_file: None,
+            keep_alive: 10,
+            op_timeout: 10,
+        }
+    }
+}
+
 /// General iotmonitor configuration, with mqtt configuration and monitored device or agents
 #[derive(Derivative)]
 #[derivative(Debug)]
-pub struct Config {
+pub struct IOTMonitor {
     pub mqtt_config: MqttConfig,
 
     #[derivative(Debug = "ignore")]
     pub state_connection: Option<Arc<sqlite::ConnectionWithFullMutex>>,
 
     /// monitored elements
-    pub monitored_devices: HashMap<String, Box<MonitoringInfo>>,
+    monitored_devices: HashMap<String, Box<MonitoringInfo>>,
+}
+
+impl IOTMonitor {
+    pub fn new(
+        mqtt_config: MqttConfig,
+        state_connection: Option<Arc<sqlite::ConnectionWithFullMutex>>,
+        monitored_devices: HashMap<String, Box<MonitoringInfo>>,
+    ) -> Self {
+        let config = IOTMonitor {
+            mqtt_config: mqtt_config,
+            monitored_devices: monitored_devices,
+            state_connection: None,
+        };
+        config
+    }
+
+    pub fn monitored_devices(&self) -> &HashMap<String, Box<MonitoringInfo>> {
+        &self.monitored_devices
+    }
+
+    pub fn monitored_devices_mut(&mut self) -> &mut HashMap<String, Box<MonitoringInfo>> {
+        &mut self.monitored_devices
+    }
 }
 
 #[derive(Debug)]
@@ -78,10 +121,10 @@ pub struct AdditionalProcessInformation {
     pub exec: String,
 
     // last time the process is restarted
-    pub lastRestarted: Option<SystemTime>,
+    pub last_restarted: Option<SystemTime>,
 
     // number of time, the process is restarted
-    pub restartedCount: u64,
+    pub restarted_count: u64,
 }
 
 /// information about the monitored item (process or device)
@@ -187,9 +230,9 @@ pub fn read_process_informations_from_config_table(
 ) {
     let mut additional_process_info = AdditionalProcessInformation {
         exec: "".into(),
-        lastRestarted: None,
+        last_restarted: None,
         pid: None,
-        restartedCount: 0,
+        restarted_count: 0,
     };
 
     for kv in table.items() {
