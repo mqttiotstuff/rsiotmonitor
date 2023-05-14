@@ -158,7 +158,7 @@ pub fn launch_process(name: &String, processinfo: &mut AdditionalProcessInformat
         processinfo.exec
     );
 
-    // construct
+    // construct command line
 
     let mut cmd = Command::new("bash");
     let all = cmd
