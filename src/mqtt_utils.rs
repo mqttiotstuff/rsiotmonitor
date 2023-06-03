@@ -12,7 +12,7 @@ use mqtt_async_client::{
 #[cfg(feature = "tls")]
 use std::io::Cursor;
 
-use crate::MqttConfig;
+use crate::config::MqttConfig;
 
 /// create a mqtt client using config properties
 pub fn client_from_args(args: &MqttConfig) -> mqtt_async_client::Result<Client> {

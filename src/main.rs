@@ -8,9 +8,7 @@ use futures_util::stream::{futures_unordered::FuturesUnordered, StreamExt};
 #[allow(unused_imports)]
 use log::{debug, error, info, trace, warn};
 use mqtt_async_client::{
-    client::{
-        Client, KeepAlive, Publish as PublishOpts, QoS, Subscribe as SubscribeOpts, SubscribeTopic,
-    },
+    client::{Client, Publish as PublishOpts, Subscribe as SubscribeOpts, SubscribeTopic},
     Error,
 };
 
@@ -18,110 +16,15 @@ use mqtt_v5_broker::{
     broker::{Broker, BrokerMessage},
     client,
 };
-#[cfg(feature = "tls")]
-use rustls;
 
 use structopt::StructOpt;
 
-use tokio::{net::TcpListener, task::JoinHandle, time::Duration};
-#[cfg(feature = "tls")]
-use webpki_roots;
+use tokio::{net::TcpListener, time::Duration};
 
-use rsiotmonitor::{history::History, process::ProcessIterator, *};
-use std::{
-    borrow::Borrow,
-    collections::HashMap,
-    io,
-    net::{Ipv6Addr, SocketAddrV6},
-    ops::{Deref, Index},
-    sync::{mpsc::Sender, Arc, RwLock},
-    time::SystemTime,
-};
-
-use toml_parse::*;
+use rsiotmonitor::{process::ProcessIterator, *};
+use std::{io, sync::Arc, time::SystemTime};
 
 use crate::mqtt_utils::*;
-
-/// read configuration from config.toml
-async fn read_configuration() -> mqtt_async_client::Result<IOTMonitor> {
-    let mut mqtt_config = MqttConfig::default();
-
-    use std::fs;
-    let contents = fs::read_to_string("config.toml").expect("cannot read config.toml");
-
-    let t = Toml::new(&contents);
-
-    let mut history_topic: Option<String> = None;
-
-    let devices: Vec<Box<MonitoringInfo>> = t.iter().fold(Vec::new(), |acc, i| {
-        let mut m = acc;
-        match i {
-            toml_parse::Value::Table(table) => {
-                if table.header() == "mqtt" {
-                    rsiotmonitor::read_mqtt_config_table(&mut mqtt_config, table);
-                } else if table.header() == "history" {
-                    for kv in table.items() {
-                        if let Some(keyname) = kv.key() {
-                            match kv.value() {
-                                Value::StrLit(s) => {
-                                    if keyname == "storageTopic" {
-                                        history_topic = Some(s.clone());
-                                    }
-                                }
-                                _ => (),
-                            }
-                        }
-                    }
-                } else {
-                    // create MonitorInfo
-                    let mut name: String = table.header().into();
-                    let mut isagent: bool = false;
-
-                    if table.header().starts_with("agent_") {
-                        if let Some(without_suffix) = name.strip_prefix("agent_") {
-                            name = without_suffix.into();
-                            isagent = true;
-                        }
-                    }
-
-                    let mut monitor_info = MonitoringInfo::create(name);
-
-                    rsiotmonitor::update_monitorinfo_from_config_table(&mut monitor_info, &table);
-
-                    // only agent have process informations
-                    if isagent {
-                        debug!("reading process informations");
-                        rsiotmonitor::read_process_informations_from_config_table(
-                            &mut monitor_info,
-                            &table,
-                        )
-                    }
-
-                    // if this is an agent, add the additional elements
-                    m.push(monitor_info);
-                }
-            }
-            _ => {
-                // ignored
-            }
-        };
-        m
-    });
-
-    // monitoring info by device name
-    let hash: HashMap<String, Box<MonitoringInfo>> =
-        HashMap::from_iter(devices.into_iter().map(|e| (e.name.clone(), e)));
-
-    let mut opt_history: Option<Box<History>> = None;
-    if let Some(topics_history) = history_topic.clone() {
-        info!("history initialization");
-        opt_history = Some(History::init().unwrap());
-    }
-
-    let iotmonitor = IOTMonitor::new(mqtt_config, None, hash, history_topic, opt_history);
-
-    Ok(iotmonitor)
-}
 
 async fn wait_2s() -> mqtt_async_client::Result<()> {
     tokio::time::sleep(Duration::from_secs(2)).await;
@@ -142,8 +45,8 @@ async fn history_and_run(
             qos: int_to_qos(1),
             topic_path: histo_topic,
         };
-        let mut subscribed_topics: Vec<SubscribeTopic> = vec![];
-        subscribed_topics.push(history_topic);
+
+        let subscribed_topics: Vec<SubscribeTopic> = vec![history_topic];
 
         let subopts = SubscribeOpts::new(subscribed_topics);
         debug!("history subscriptions to watch : {:?}", &subopts);
@@ -151,9 +54,7 @@ async fn history_and_run(
         subres.any_failures()?;
 
         info!("history activated");
-
-        // subscription to hello, and state
-    } // lock section on config
+    } // lock section on iotmonitor structure
 
     // events loop on subscription receive
     loop {
@@ -266,7 +167,7 @@ async fn subscribe_and_run(
                             info!("hello topic {} received", &hello_topic);
                             match connection {
                                 Some(c) => {
-                                    let get_all_states_result = state::get_all_states(c, &name);
+                                    let get_all_states_result = state::get_all_states(c, name);
                                     if let Ok(state) = get_all_states_result {
                                         for i in state {
                                             info!(
@@ -297,7 +198,7 @@ async fn subscribe_and_run(
                                     // send state associated to the
                                     debug!("saving state for {}", &topic);
                                     if let Err(save_error) =
-                                        state::save_state(c, &topic, &name, &payload)
+                                        state::save_state(c, &topic, name, payload)
                                     {
                                         warn!(
                                             "error in saving the state for {} : {}",
@@ -318,7 +219,7 @@ async fn subscribe_and_run(
 
                     // update watch topics
                     for watch_topics in &c.watch_topics {
-                        if does_topic_match(&watch_topics, &topic) {
+                        if does_topic_match(watch_topics, &topic) {
                             c.next_contact = Some(SystemTime::now() + c.timeout_value);
                         }
                     }
@@ -334,7 +235,7 @@ fn wrap_already_exists_processes(config: IOTMonitor) -> IOTMonitor {
     // TODO refactor this
     debug!("start checking already exists processes");
 
-    let MAGICPROCSSHEADER: String = String::from(process::MAGIC) + "_";
+    let magic_process_header: String = String::from(process::MAGIC) + "_";
 
     let mut c: IOTMonitor = config;
 
@@ -343,12 +244,12 @@ fn wrap_already_exists_processes(config: IOTMonitor) -> IOTMonitor {
     for p in pi {
         for e in p.commmand_line_elements {
             // println!("evaluate {}",e);
-            if e.contains(&MAGICPROCSSHEADER) {
+            if e.contains(&magic_process_header) {
                 debug!("found pattern evaluate {}", e);
-                match e.find(&MAGICPROCSSHEADER) {
+                match e.find(&magic_process_header) {
                     Some(idx1) => {
-                        let s = &e[idx1 + MAGICPROCSSHEADER.len()..];
-                        match s.find(";") {
+                        let s = &e[idx1 + magic_process_header.len()..];
+                        match s.find(';') {
                             Some(idx2) => {
                                 let name = String::from(&s[0..idx2]);
                                 debug!("{} found", &name);
@@ -379,6 +280,7 @@ use chrono::offset::Utc;
 use chrono::DateTime;
 
 /// start method
+#[allow(unreachable_code)]
 async fn start(config: IOTMonitor) -> mqtt_async_client::Result<()> {
     // search for existing processes, and wrap their declaration
 
@@ -410,7 +312,7 @@ async fn start(config: IOTMonitor) -> mqtt_async_client::Result<()> {
             info!("connected : {:?}\n", ok_result);
 
             if let Some(clientid) = config_mqtt_watchdog.client_id {
-                config_mqtt_watchdog.client_id = Some(clientid.clone() + "_outbounds".into());
+                config_mqtt_watchdog.client_id = Some(clientid.clone() + "_outbounds");
                 let mut client2 = match client_from_args(&config_mqtt_watchdog) {
                     Ok(client) => client,
                     Err(e) => panic!("{}", e), // cannot connect twice
@@ -424,7 +326,7 @@ async fn start(config: IOTMonitor) -> mqtt_async_client::Result<()> {
                 if let Some(histo_topic_string) = histo_topic.clone() {
                     // prepare history run
                     let mut config_ref_history = config_mqtt_watchdog.clone();
-                    config_ref_history.client_id = Some(clientid + "_history".into());
+                    config_ref_history.client_id = Some(clientid + "_history");
                     let history_config_ref = config_ref.clone();
 
                     tokio::spawn(async move {
@@ -447,7 +349,7 @@ async fn start(config: IOTMonitor) -> mqtt_async_client::Result<()> {
                             error!("error from subscribe history, {}", e);
                             // try reconnecting
                             // break;
-                            client2.disconnect().await;
+                            let _r = client2.disconnect().await;
                         };
                     });
                 }
@@ -518,7 +420,7 @@ async fn start(config: IOTMonitor) -> mqtt_async_client::Result<()> {
                                 let datetime: DateTime<Utc> = SystemTime::now().into();
 
                                 let mut pexpired = PublishOpts::new(
-                                    format!("{}/expired/{}", l_base_topic.to_string(), name),
+                                    format!("{}/expired/{}", l_base_topic, name),
                                     format!("{}", datetime.format("%d/%m/%Y %T"))
                                         .as_bytes()
                                         .to_vec(),
@@ -527,24 +429,23 @@ async fn start(config: IOTMonitor) -> mqtt_async_client::Result<()> {
                                 pexpired.set_retain(false);
 
                                 let publish_result = cnx_mqtt.publish(&pexpired).await;
-                                if let Err(e) = publish_result {
+                                if let Err(_e) = publish_result {
                                     warn!("error in publishing the health check");
                                     break;
                                 }
                             }
                         }
 
-                        wait_2s().await;
+                        let _r = wait_2s().await;
                     }
 
-                    cnx_mqtt.disconnect().await;
+                    let _r = cnx_mqtt.disconnect().await;
                 });
 
                 if let Err(e) = subscribe_and_run(&config_ref, &mut client).await {
                     error!("error from subscribe and run, {}", e);
                     // try reconnecting
-                    // break;
-                    client.disconnect().await;
+                    let _r = client.disconnect().await;
                 }
             } else {
                 info!("no client id");
@@ -557,12 +458,13 @@ async fn start(config: IOTMonitor) -> mqtt_async_client::Result<()> {
             error!("error in connection : {:?}\n", conn_result);
         }
         // wait 1s before retry to reconnect
-        wait_2s().await;
+        let _r = wait_2s().await;
     } // loop to reconnect
 
     Ok(())
 }
 
+#[allow(dead_code)]
 #[derive(Debug, StructOpt, Clone)]
 #[structopt(name = "rsiotmonitor", about = "Command line arguments")]
 struct Opt {
@@ -571,11 +473,11 @@ struct Opt {
     #[structopt(long)]
     debug: bool,
 
-    #[structopt(long)]
-    embeddedMqtt: bool,
+    #[structopt(long, name = "embeddedMqtt")]
+    embedded_mqtt: bool,
 
-    #[structopt(long, default_value = "0.0.0.0:1884")]
-    embeddedMqttBindOptions: String,
+    #[structopt(long, default_value = "0.0.0.0:1884", name = "embeddedMqttBindOptions")]
+    embedded_mqtt_bind_options: String,
 
     #[structopt(long)]
     disable: Option<String>,
@@ -624,17 +526,17 @@ async fn launch_mqtt_server(opt: Opt) -> Result<(), Box<dyn std::error::Error>> 
         broker.run().await;
     });
 
-    let local_bind_option = opt.embeddedMqttBindOptions.clone();
+    let local_bind_option = opt.embedded_mqtt_bind_options.clone();
     let local_broker_tx = broker_tx.clone();
 
     // tcp_listener,
     let tcp_listener = tokio::task::spawn(async move {
-        tcp_server_loop(local_broker_tx.clone(), local_bind_option).await;
+        let _r = tcp_server_loop(local_broker_tx.clone(), local_bind_option).await;
     });
 
     // websocket_listener
     let websocket_listener = tokio::task::spawn(async move {
-        websocket_server_loop(broker_tx).await;
+        let _r = websocket_server_loop(broker_tx).await;
     });
 
     let http_server = tokio::task::spawn(async move {
@@ -652,28 +554,19 @@ async fn main() {
     env_logger::init();
 
     let opt = Opt::from_args();
-    let mut broker_spawn: JoinHandle<()>;
-    if opt.embeddedMqtt {
-        info!("starting embedded mqtt {}", opt.embeddedMqttBindOptions);
+
+    if opt.embedded_mqtt {
+        info!("starting embedded mqtt {}", opt.embedded_mqtt_bind_options);
         let cloned_opt = opt.clone();
 
-        broker_spawn = tokio::spawn(async move {
-            launch_mqtt_server(cloned_opt).await;
+        let _broker_spawn = tokio::spawn(async move {
+            let _r = launch_mqtt_server(cloned_opt).await;
+            // ignore result
         });
     }
 
-    let config = read_configuration().await.unwrap();
-
-    debug!("config : {:?}\n", &config);
-
-    // todo, communicate with the rsiotmonitor instance and trigger
-    if let Some(name) = opt.enable {
-        // enable the element
-    }
-
-    if let Some(name) = opt.disable {
-        // disable the element
-    }
+    let config = crate::config::read_configuration().await.unwrap();
+    debug!("starting with config : {:?}\n", &config);
 
     start(config).await.unwrap();
 }

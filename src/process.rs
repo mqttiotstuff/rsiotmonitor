@@ -105,7 +105,7 @@ fn test_iterator() {
 }
 
 
-/// create the process
+/// create the process, using fork
 pub fn run_process_with_fork(name: &String, processinfo: &mut AdditionalProcessInformation) -> Result<()> {
     
     let MAGICPROCSSHEADER: String = String::from(MAGIC) + "_";
