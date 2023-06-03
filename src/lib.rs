@@ -5,6 +5,12 @@ pub mod process;
 
 pub mod state;
 
+pub mod httpserver;
+
+pub mod mqtt_utils;
+
+pub mod history;
+
 use std::{
     collections::HashMap,
     sync::Arc,
@@ -12,10 +18,9 @@ use std::{
 };
 
 use derivative::Derivative;
+use history::History;
 use log::debug;
 use toml_parse::Value;
-
-pub mod httpserver;
 
 /// Mqtt connection properties and configuration
 #[derive(Debug, Clone)]
@@ -82,6 +87,11 @@ impl Default for MqttConfig {
 pub struct IOTMonitor {
     pub mqtt_config: MqttConfig,
 
+    pub history_topic: Option<String>,
+
+    #[derivative(Debug = "ignore")]
+    pub history: Option<Box<History>>,
+
     #[derivative(Debug = "ignore")]
     pub state_connection: Option<Arc<sqlite::ConnectionWithFullMutex>>,
 
@@ -94,11 +104,15 @@ impl IOTMonitor {
         mqtt_config: MqttConfig,
         state_connection: Option<Arc<sqlite::ConnectionWithFullMutex>>,
         monitored_devices: HashMap<String, Box<MonitoringInfo>>,
+        history_topic: Option<String>,
+        history: Option<Box<History>>,
     ) -> Self {
         let config = IOTMonitor {
             mqtt_config: mqtt_config,
             monitored_devices: monitored_devices,
             state_connection: None,
+            history_topic,
+            history,
         };
         config
     }
