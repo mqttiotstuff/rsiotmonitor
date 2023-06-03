@@ -5,41 +5,25 @@ use std::{fmt, fs, u128};
 
 use leveldb::database::Database;
 use leveldb::iterator::Iterable;
-use leveldb::kv::KV;
 use leveldb::options::{Options, ReadOptions, WriteOptions};
 
 use db_key::Key;
 #[allow(unused_imports)]
 use log::{debug, error, info, trace, warn};
 use parquet::basic::Compression;
-use parquet::data_type::{ByteArray, ByteArrayType, FixedLenByteArrayType, Int32Type, Int96, Int64Type};
+use parquet::data_type::{
+    ByteArray, ByteArrayType, FixedLenByteArrayType, Int32Type, Int64Type, Int96,
+};
 use parquet::file::properties::WriterProperties;
 use parquet::file::writer::SerializedFileWriter;
 use parquet::format::StringType;
 use parquet::schema::parser::parse_message_type;
-use rusty_leveldb::CompressionType;
+
+use leveldb::util::FromU8;
 
 use std::error::Error;
 
 /// time stamp storage
-struct I64 {
-    value: i64,
-}
-
-impl Key for I64 {
-    fn from_u8(key: &[u8]) -> I64 {
-        assert!(key.len() == 8);
-        let b: [u8; 8] = key[0..8].try_into().unwrap();
-        I64 {
-            value: i64::from_le_bytes(b),
-        }
-    }
-
-    fn as_slice<T, F: Fn(&[u8]) -> T>(&self, f: F) -> T {
-        let b = self.value.to_le_bytes();
-        f(&b)
-    }
-}
 
 struct TopicPayload<'a> {
     topic: String,
@@ -79,7 +63,7 @@ impl fmt::Display for HistoryError {
 impl Error for HistoryError {}
 
 pub struct History {
-    database: Box<Database<I64>>,
+    database: Box<Database>,
 }
 
 impl History {
@@ -89,7 +73,7 @@ impl History {
 
         let mut options = Options::new();
         options.create_if_missing = true;
-        let database = match Database::open(path, options) {
+        let database = match Database::open(path, &options) {
             Ok(db) => db,
             Err(e) => {
                 panic!("failed to open database: {:?}", e);
@@ -107,14 +91,14 @@ impl History {
         let instant = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap();
-        let t = I64 {
-            value: instant.as_micros().try_into().unwrap(),
-        };
+
+        let t: i64 = instant.as_micros().try_into().unwrap();
+
         let p = TopicPayload { topic, payload };
 
         return p.as_slice(|payload_bytes| {
             debug!("payload : {:?}", payload_bytes);
-            match self.database.put(write_opts, &t, payload_bytes) {
+            match self.database.put(&write_opts, &t, payload_bytes) {
                 Ok(_) => Ok(()),
                 Err(e) => {
                     error!("failed to write to database: {:?}", e);
@@ -124,7 +108,11 @@ impl History {
         });
     }
 
-    pub fn export_to_parquet(&self, output_file: &str) -> Result<(), Box<dyn Error>> {
+    pub fn export_to_parquet(
+        &self,
+        output_file: &str,
+        delete_values: bool,
+    ) -> Result<(), Box<dyn Error>> {
         let path = Path::new(output_file);
 
         let record_type = "
@@ -146,9 +134,11 @@ impl History {
         // writing rows ..
         let mut cpt: u128 = 0;
 
-        let mut it = self.database.iter(ReadOptions::new());
+        let mut it = self.database.iter(&ReadOptions::new());
 
         let mut row = it.next();
+
+        let mut last: Option<i64> = None;
 
         while row.is_some() {
             let mut row_group_writer = writer.next_row_group().unwrap();
@@ -161,7 +151,8 @@ impl History {
 
             while row.is_some() && (cpt % 10_000) != 0 {
                 if let Some(a) = row.as_ref() {
-                    let timestamp = &a.0;
+                    let timestamp = i64::from_u8(&a.0);
+                    last = Some(timestamp);
                     let tp = TopicPayload::from_u8(&a.1);
                     let topic = tp.topic;
                     let payload = tp.payload;
@@ -170,7 +161,7 @@ impl History {
                     let b = payload.to_vec();
                     all_payloads.push(b);
 
-                    let tbytes = timestamp.value;
+                    let tbytes = timestamp;
                     all_timestamps.push(tbytes);
 
                     cpt += 1;
@@ -181,14 +172,13 @@ impl History {
             if let Some(mut col_writer) = row_group_writer.next_column().unwrap() {
                 // write all
 
-               
-
                 col_writer
                     .typed::<Int64Type>()
                     .write_batch(
-                        &all_timestamps, None,
+                        &all_timestamps,
+                        None,
                         None, // Some(&[3, 3, 3, 2, 2]),
-                             //Some(&[0, 1, 0, 1, 1]),
+                              //Some(&[0, 1, 0, 1, 1]),
                     )
                     .expect("error in writing columns");
 
@@ -245,6 +235,22 @@ impl History {
 
         writer.close().unwrap();
 
+        // self.database.delete(&WriteOptions::new(), &key);
+
+        if delete_values {
+            if let Some(last_timestamp) = last {
+                for (k, v) in self.database.iter(&ReadOptions::new()) {
+                    let key_value = i64::from_u8(&k);
+                    
+                    if let Err(e) = self.database.delete(&WriteOptions::new(), &key_value) {
+                        warn!("error while deleting the value : {}", e);
+                    }
+                    if key_value == last_timestamp {
+                        break;
+                    }
+                }
+            }
+        }
         Ok(())
     }
 }
@@ -259,8 +265,8 @@ pub fn test_storage() {
     h.store_event("a4".into(), "b".as_bytes()).unwrap();
 
     // browse and dump the content
-    for i in h.database.iter(ReadOptions::new()) {
-        println!("{} : {:?}", &i.0.value, &i.1);
+    for i in h.database.iter(&ReadOptions::new()) {
+        println!("{} : {:?}", &i64::from_u8(&i.0), &i.1);
     }
 }
 
@@ -275,5 +281,16 @@ pub fn test_export() {
         h.store_event("a4".into(), "b".as_bytes()).unwrap();
     }
     // export to parquet
-    h.export_to_parquet("test.parquet").unwrap();
+    h.export_to_parquet("test.parquet", true).unwrap();
+
+    // no more elements
+    assert!(h.database.iter(&ReadOptions::new()).next().is_none());
+}
+
+#[test]
+pub fn export() {
+    let h = History::init().unwrap();
+
+    // export to parquet
+    h.export_to_parquet("h.parquet", false).unwrap();
 }
