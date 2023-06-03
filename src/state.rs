@@ -1,3 +1,4 @@
+use log::debug;
 
 use sqlite::{self, Connection, ConnectionWithFullMutex, Result, State};
 
