@@ -32,7 +32,6 @@ nix= "0.26.2"
 derivative = "2.2.0"
 mqtt-v5-broker = { path="deps/mqtt-broker/mqtt-v5-broker" }
 
-
 hyper={ version = "0.14.23", features = ["full"] }
 tower = { version = "0.4", features = ["full"] }
 tower-http =  { version="0.3.5", features = ["full"] }
@@ -41,6 +40,8 @@ http-body = "0.4.5"
 
 leveldb = "0.8.6"
 db-key = "0.0.5"
+
+rusty-leveldb = "1.0.6"
 
 mlua = { version = "0.8", features = ["lua54", "vendored"] }
 

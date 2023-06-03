@@ -23,6 +23,13 @@ Command line to statically compile glibc into the exe. This create a static buil
 
 	RUSTFLAGS="-C target-feature=+crt-static" cargo build --target x86_64-unknown-linux-gnu
 
+## x64 build with older glibc release
+
+using a docker with old rust compiled 
+
+	construct image from docker_old_glibc, with name buster-with-build:latest 
+
+	docker run --rm --user "$(id -u)":"$(id -g)" -v "$PWD":/usr/src/myapp -w /usr/src/myapp buster-with-build:latest cargo build --release
 
 
 ### MUSL COMPILE EVALUATION 
