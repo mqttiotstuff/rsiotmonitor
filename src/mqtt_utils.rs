@@ -12,6 +12,12 @@ use mqtt_async_client::{
 #[cfg(feature = "tls")]
 use std::io::Cursor;
 
+#[cfg(feature = "tls")]
+use rustls;
+
+#[cfg(feature = "tls")]
+use webpki_roots;
+
 use crate::config::MqttConfig;
 
 /// create a mqtt client using config properties

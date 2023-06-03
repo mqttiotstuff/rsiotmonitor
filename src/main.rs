@@ -1,12 +1,14 @@
 // use futures_core::future;
 
+#[allow(unused_imports)]
+use log::{debug, error, info, trace, warn};
+
 use futures_util::future::try_join_all;
 #[allow(unused_imports)]
 // #![deny(warnings)]
 use futures_util::stream::{futures_unordered::FuturesUnordered, StreamExt};
 
-#[allow(unused_imports)]
-use log::{debug, error, info, trace, warn};
+
 use mqtt_async_client::{
     client::{Client, Publish as PublishOpts, Subscribe as SubscribeOpts, SubscribeTopic},
     Error,
@@ -25,6 +27,7 @@ use rsiotmonitor::{process::ProcessIterator, *};
 use std::{io, sync::Arc, time::SystemTime};
 
 use crate::mqtt_utils::*;
+
 
 async fn wait_2s() -> mqtt_async_client::Result<()> {
     tokio::time::sleep(Duration::from_secs(2)).await;
