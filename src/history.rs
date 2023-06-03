@@ -40,7 +40,7 @@ struct TopicPayload<'a> {
 impl<'a> TopicPayload<'a> {
     fn from_u8(key: &'a [u8]) -> TopicPayload<'a> {
         let tb = key[0..1].try_into().unwrap();
-        let mut topic_size: usize = u16::from_le_bytes(tb).try_into().unwrap();
+        let topic_size: usize = u16::from_le_bytes(tb).try_into().unwrap();
         let topic: String = String::from_utf8(key[2..2 + topic_size].to_vec()).unwrap();
         let payload = &key[2 + topic_size + 1..];
         TopicPayload { topic, payload }
@@ -79,7 +79,7 @@ impl History {
 
         let mut options = Options::new();
         options.create_if_missing = true;
-        let database = match Database::open(&path, options) {
+        let database = match Database::open(path, options) {
             Ok(db) => db,
             Err(e) => {
                 panic!("failed to open database: {:?}", e);

@@ -1,6 +1,5 @@
-use log::debug;
+
 use sqlite::{self, Connection, ConnectionWithFullMutex, Result, State};
-use std::error;
 
 pub fn init() -> Result<ConnectionWithFullMutex> {
     let connection = Connection::open_with_full_mutex("iotstates.db").unwrap();
@@ -14,24 +13,24 @@ pub fn init() -> Result<ConnectionWithFullMutex> {
 
 pub fn save_state(
     connection: &Connection,
-    topic: &String,
-    name: &String,
+    topic: &str,
+    name: &str,
     payload: &[u8],
 ) -> Result<State> {
     let query = "INSERT OR REPLACE INTO iotstates (name, topic,state) VALUES(?,?,?)";
     let mut statement = connection.prepare(query).unwrap();
-    statement.bind((1, name.as_str())).expect("fail to bind name");
-    statement.bind((2, topic.as_str())).unwrap();
+    statement.bind((1, name)).expect("fail to bind name");
+    statement.bind((2, topic)).unwrap();
     statement.bind((3, payload)).unwrap();
     statement.next()
 }
 
-pub fn read_state(connection: &Connection, name: &String, topic: &String) -> Result<Vec<u8>> {
+pub fn read_state(connection: &Connection, name: &str, topic: &str) -> Result<Vec<u8>> {
     let query = "select state from iotstates where topic = ? and name = ?";
 
     let mut statement = connection.prepare(query).unwrap();
-    statement.bind((1, topic.as_str())).unwrap();
-    statement.bind((2, name.as_str())).unwrap();
+    statement.bind((1, topic)).unwrap();
+    statement.bind((2, name)).unwrap();
 
     if let Ok(State::Row) = statement.next() {
         let value = statement.read::<Vec<u8>, _>("state").unwrap();
@@ -39,16 +38,16 @@ pub fn read_state(connection: &Connection, name: &String, topic: &String) -> Res
     }
 
     Err(sqlite::Error {
-        code: Some(99 as isize),
+        code: Some(99_isize),
         message: Some("no elements".to_string()),
     })
 }
 
-pub fn get_all_states(connection: &Connection, name: &String) -> Result<Vec<(String, Vec<u8>)>> {
+pub fn get_all_states(connection: &Connection, name: &str) -> Result<Vec<(String, Vec<u8>)>> {
     let query = "select topic, state from iotstates where name = ?";
 
     let mut statement = connection.prepare(query).unwrap();
-    statement.bind((1, name.as_str())).unwrap();
+    statement.bind((1, name)).unwrap();
 
     let mut result: Vec<(String, Vec<u8>)> = Vec::new();
     while let Ok(State::Row) = statement.next() {

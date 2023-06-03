@@ -22,10 +22,7 @@ use std::{
 use derivative::Derivative;
 use history::History;
 
-
-
 use log::debug;
-use toml_parse::Value;
 
 /// General iotmonitor configuration, with mqtt configuration and monitored device or agents
 #[derive(Derivative)]
@@ -53,14 +50,14 @@ impl IOTMonitor {
         history_topic: Option<String>,
         history: Option<Box<History>>,
     ) -> Self {
-        let config = IOTMonitor {
+        // return the IOTMonitor structure
+        IOTMonitor {
             mqtt_config: mqtt_config,
-            monitored_devices: monitored_devices,
+            monitored_devices,
             state_connection: None,
             history_topic,
             history,
-        };
-        config
+        }
     }
 
     pub fn monitored_devices(&self) -> &HashMap<String, Box<MonitoringInfo>> {
@@ -71,7 +68,6 @@ impl IOTMonitor {
         &mut self.monitored_devices
     }
 }
-
 
 /// information about the monitored item (process or device)
 #[derive(Debug)]
@@ -98,7 +94,6 @@ pub struct MonitoringInfo {
     pub hello_count: u32,
 }
 
-
 #[derive(Debug)]
 pub struct AdditionalProcessInformation {
     // pid is to track the process while running
@@ -120,7 +115,7 @@ const INITIAL_DELAY_FOR_CHECKING: u64 = 30;
 impl MonitoringInfo {
     pub fn create(name: String) -> Box<MonitoringInfo> {
         let b: MonitoringInfo = MonitoringInfo {
-            name: name.clone(),
+            name,
             watch_topics: Vec::new(),
             associated_process_information: None,
             enabled: true,
@@ -134,11 +129,11 @@ impl MonitoringInfo {
         Box::new(b)
     }
 
-    pub fn update_next_contact(self: &mut Self) {
+    pub fn update_next_contact(&mut self) {
         self.next_contact = Some(SystemTime::now());
     }
 
-    pub fn has_expired(self: &Self) -> bool {
+    pub fn has_expired(&self) -> bool {
         if let Some(next_time) = self.next_contact {
             let current_time = SystemTime::now();
             let expired: bool = current_time > next_time + self.timeout_value;

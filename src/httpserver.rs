@@ -1,20 +1,15 @@
 use http::{
-    header::{HeaderName, AUTHORIZATION, CONTENT_TYPE},
+   
     Request, Response,
 };
-use hyper::{server::Server, service::make_service_fn, Body, Error};
-use std::{convert::Infallible, iter::once, net::SocketAddr, sync::Arc};
-use tower::{make::Shared, service_fn, ServiceBuilder};
-use tower_http::{
-    add_extension::AddExtensionLayer, auth::RequireAuthorizationLayer,
-    compression::CompressionLayer, propagate_header::PropagateHeaderLayer,
-    sensitive_headers::SetSensitiveRequestHeadersLayer, set_header::SetResponseHeaderLayer,
-    trace::TraceLayer, validate_request::ValidateRequestHeaderLayer,
-};
+use hyper::{server::Server, Body, Error};
+use std::{net::SocketAddr};
+use tower::{make::Shared,ServiceBuilder};
+use tower_http::{compression::CompressionLayer, trace::TraceLayer};
 
 // Our request handler. This is where we would implement the application logic
 // for responding to HTTP requests...
-async fn handler(request: Request<Body>) -> Result<Response<Body>, Error> {
+async fn handler(_request: Request<Body>) -> Result<Response<Body>, Error> {
     Ok(Response::new(Body::from("Hello World")))
 }
 

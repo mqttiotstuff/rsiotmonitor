@@ -1,11 +1,10 @@
-
-use log::{debug, info, error};
+use log::{debug, info};
 
 use std::collections::HashMap;
 
 use toml_parse::{Toml, Value};
 
-use crate::{MonitoringInfo, IOTMonitor, history::History, AdditionalProcessInformation};
+use crate::{history::History, AdditionalProcessInformation, IOTMonitor, MonitoringInfo};
 
 use std::time::Duration;
 
@@ -68,7 +67,6 @@ impl Default for MqttConfig {
     }
 }
 
-
 /// read configuration from config.toml
 pub async fn read_configuration() -> mqtt_async_client::Result<IOTMonitor> {
     let mut mqtt_config = MqttConfig::default();
@@ -82,54 +80,46 @@ pub async fn read_configuration() -> mqtt_async_client::Result<IOTMonitor> {
 
     let devices: Vec<Box<MonitoringInfo>> = t.iter().fold(Vec::new(), |acc, i| {
         let mut m = acc;
-        match i {
-            toml_parse::Value::Table(table) => {
-                if table.header() == "mqtt" {
-                    crate::config::read_mqtt_config_table(&mut mqtt_config, table);
-                } else if table.header() == "history" {
-                    for kv in table.items() {
-                        if let Some(keyname) = kv.key() {
-                            match kv.value() {
-                                Value::StrLit(s) => {
-                                    if keyname == "storageTopic" {
-                                        history_topic = Some(s.clone());
-                                    }
-                                }
-                                _ => (),
+        if let toml_parse::Value::Table(table) = i {
+            if table.header() == "mqtt" {
+                crate::config::read_mqtt_config_table(&mut mqtt_config, table);
+            } else if table.header() == "history" {
+                for kv in table.items() {
+                    if let Some(keyname) = kv.key() {
+                        if let Value::StrLit(s) = kv.value() {
+                            if keyname == "storageTopic" {
+                                history_topic = Some(s.clone());
                             }
                         }
                     }
-                } else {
-                    // create MonitorInfo
-                    let mut name: String = table.header().into();
-                    let mut isagent: bool = false;
-
-                    if table.header().starts_with("agent_") {
-                        if let Some(without_suffix) = name.strip_prefix("agent_") {
-                            name = without_suffix.into();
-                            isagent = true;
-                        }
-                    }
-
-                    let mut monitor_info = MonitoringInfo::create(name);
-
-                    crate::config::update_monitorinfo_from_config_table(&mut monitor_info, &table);
-
-                    // only agent have process informations
-                    if isagent {
-                        debug!("reading process informations");
-                        crate::config::read_process_informations_from_config_table(
-                            &mut monitor_info,
-                            &table,
-                        )
-                    }
-
-                    // if this is an agent, add the additional elements
-                    m.push(monitor_info);
                 }
-            }
-            _ => {
-                // ignored
+            } else {
+                // create MonitorInfo
+                let mut name: String = table.header().into();
+                let mut isagent: bool = false;
+
+                if table.header().starts_with("agent_") {
+                    if let Some(without_suffix) = name.strip_prefix("agent_") {
+                        name = without_suffix.into();
+                        isagent = true;
+                    }
+                }
+
+                let mut monitor_info = MonitoringInfo::create(name);
+
+                crate::config::update_monitorinfo_from_config_table(&mut monitor_info, &table);
+
+                // only agent have process informations
+                if isagent {
+                    debug!("reading process informations");
+                    crate::config::read_process_informations_from_config_table(
+                        &mut monitor_info,
+                        table,
+                    )
+                }
+
+                // if this is an agent, add the additional elements
+                m.push(monitor_info);
             }
         };
         m
@@ -140,7 +130,7 @@ pub async fn read_configuration() -> mqtt_async_client::Result<IOTMonitor> {
         HashMap::from_iter(devices.into_iter().map(|e| (e.name.clone(), e)));
 
     let mut opt_history: Option<Box<History>> = None;
-    if let Some(topics_history) = history_topic.clone() {
+    if let Some(_topics_history) = history_topic.clone() {
         info!("history initialization");
         opt_history = Some(History::init().unwrap());
     }
@@ -150,7 +140,6 @@ pub async fn read_configuration() -> mqtt_async_client::Result<IOTMonitor> {
     Ok(iotmonitor)
 }
 
-
 /// in parsing, update the monitoinfo
 pub fn update_monitorinfo_from_config_table(
     monitor_info: &mut MonitoringInfo,
@@ -158,30 +147,29 @@ pub fn update_monitorinfo_from_config_table(
 ) {
     for kv in table.items() {
         if let Some(keyname) = kv.key() {
-            match kv.value() {
-                Value::StrLit(s) => {
+            if let Value::StrLit(s) = kv.value() {
+                match keyname {
                     // watchTimeOut : watch dog for alive state, when the timeout is reached without and interactions on watchTopics, then iotmonitor trigger an expire message for the device
                     // helloTopic : the topic to observe to welcome the device. This topic trigger the state recovering for the device and agents. IotMonitor, resend the previous stored stateTopics
                     // watchTopics : the topic pattern to observe to know the device is alive
                     // stateTopics : list of topics for recording the states and reset them as they are welcomed
-
-                    if keyname == "watchTopics" {
-                        let mut topicList = Vec::new();
-                        topicList.push(s.clone());
-                        monitor_info.watch_topics = topicList;
-                    } else if keyname == "stateTopics" {
+                    "watchTopics" => {
+                        let topic_list = vec![s.clone()];
+                        monitor_info.watch_topics = topic_list;
+                    }
+                    "stateTopics" => {
                         monitor_info.state_topic = Some(s.clone());
-                    } else if keyname == "helloTopic" {
+                    }
+                    "helloTopic" => {
                         monitor_info.hello_topic = Some(s.clone());
-                    } else if keyname == "watchTimeOut" {
+                    }
+                    "watchTimeOut" => {
                         let d = s.parse::<u64>().unwrap();
                         let duration = Duration::from_secs(d);
                         monitor_info.timeout_value = duration;
-                    } else {
-                        debug!("unknown key {}", &keyname);
                     }
+                    _ => debug!("unknown key {}", &keyname),
                 }
-                _ => (),
             }
         }
     }
@@ -200,13 +188,10 @@ pub fn read_process_informations_from_config_table(
 
     for kv in table.items() {
         if let Some(keyname) = kv.key() {
-            match kv.value() {
-                Value::StrLit(s) => {
-                    if keyname == "exec" {
-                        additional_process_info.exec = s.clone();
-                    }
+            if let Value::StrLit(s) = kv.value() {
+                if keyname == "exec" {
+                    additional_process_info.exec = s.clone();
                 }
-                _ => (),
             }
         }
     }
@@ -218,8 +203,8 @@ pub fn read_mqtt_config_table(config: &mut MqttConfig, table: &toml_parse::Table
     assert!(table.header() == "mqtt");
     for kv in table.items() {
         if let Some(keyname) = kv.key() {
-            match kv.value() {
-                Value::StrLit(s) => match keyname {
+            if let Value::StrLit(s) = kv.value() {
+                match keyname {
                     "serverAddress" => {
                         config.url = s.clone();
                     }
@@ -238,8 +223,7 @@ pub fn read_mqtt_config_table(config: &mut MqttConfig, table: &toml_parse::Table
                     s => {
                         panic!("unknown mqtt section property : {}", s);
                     }
-                },
-                _ => (),
+                }
             }
         }
     }

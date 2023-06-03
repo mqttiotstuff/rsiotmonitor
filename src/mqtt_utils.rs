@@ -4,7 +4,7 @@ use std::time::Duration;
 use log::{debug, error, info, trace, warn};
 use mqtt_async_client::{
     client::{
-        Client, KeepAlive, Publish as PublishOpts, QoS, Subscribe as SubscribeOpts, SubscribeTopic,
+        Client, KeepAlive, QoS, 
     },
     Error,
 };
@@ -43,7 +43,7 @@ pub fn client_from_args(args: &MqttConfig) -> mqtt_async_client::Result<Client> 
                 .clone();
             cc.root_store
                 .add(&cert)
-                .map_err(|e| Error::from_std_err(e))?;
+                .map_err(Error::from_std_err)?;
             Some(cc)
         } else if args.tls_mozilla_root_cas {
             let mut cc = rustls::ClientConfig::new();
@@ -102,7 +102,7 @@ pub fn int_to_qos(qos: u8) -> QoS {
  */
 pub fn does_topic_match(tested_topic: &String, evaluated_topic: &String) -> bool {
     let mut tested = tested_topic.clone();
-    if tested_topic.ends_with("#") {
+    if tested_topic.ends_with('#') {
         tested = (tested[0..tested.len() - 1]).to_string();
         evaluated_topic.starts_with(&tested)
     } else if tested_topic.eq("") {

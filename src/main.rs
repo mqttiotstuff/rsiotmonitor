@@ -8,7 +8,6 @@ use futures_util::future::try_join_all;
 // #![deny(warnings)]
 use futures_util::stream::{futures_unordered::FuturesUnordered, StreamExt};
 
-
 use mqtt_async_client::{
     client::{Client, Publish as PublishOpts, Subscribe as SubscribeOpts, SubscribeTopic},
     Error,
@@ -27,7 +26,6 @@ use rsiotmonitor::{process::ProcessIterator, *};
 use std::{io, sync::Arc, time::SystemTime};
 
 use crate::mqtt_utils::*;
-
 
 async fn wait_2s() -> mqtt_async_client::Result<()> {
     tokio::time::sleep(Duration::from_secs(2)).await;
@@ -78,9 +76,8 @@ async fn history_and_run(
                 let config_ref = monitor.write().await;
                 if let Some(history) = &config_ref.history {
                     debug!("storing event");
-                    match history.store_event(topic, payload) {
-                        Err(e) => error!("error in storing events : {}", e),
-                        _ => (),
+                    if let Err(e) = history.store_event(topic, payload) {
+                         error!("error in storing events : {}", e);
                     }
                 }
             }
@@ -168,27 +165,24 @@ async fn subscribe_and_run(
                         if hello_topic.eq(&topic) {
                             // c.hello_count += 1;
                             info!("hello topic {} received", &hello_topic);
-                            match connection {
-                                Some(c) => {
-                                    let get_all_states_result = state::get_all_states(c, name);
-                                    if let Ok(state) = get_all_states_result {
-                                        for i in state {
-                                            info!(
-                                                "restored state for {}, topic {}, state {:?}",
-                                                &name, &i.0, &i.1
-                                            );
-                                            let mut p = PublishOpts::new(i.0, i.1);
-                                            p.set_qos(int_to_qos(1));
-                                            p.set_retain(false);
+                            if let Some(c) = connection {
+                                let get_all_states_result = state::get_all_states(c, name);
+                                if let Ok(state) = get_all_states_result {
+                                    for i in state {
+                                        info!(
+                                            "restored state for {}, topic {}, state {:?}",
+                                            &name, &i.0, &i.1
+                                        );
+                                        let mut p = PublishOpts::new(i.0, i.1);
+                                        p.set_qos(int_to_qos(1));
+                                        p.set_retain(false);
 
-                                            // async publish
-                                            if let Err(e) = client.publish(&p).await {
-                                                error!("error while publishing , {}", e);
-                                            }
+                                        // async publish
+                                        if let Err(e) = client.publish(&p).await {
+                                            error!("error while publishing , {}", e);
                                         }
                                     }
                                 }
-                                _ => {}
                             }
                         }
                     }
@@ -249,28 +243,34 @@ fn wrap_already_exists_processes(config: IOTMonitor) -> IOTMonitor {
             // println!("evaluate {}",e);
             if e.contains(&magic_process_header) {
                 debug!("found pattern evaluate {}", e);
-                match e.find(&magic_process_header) {
-                    Some(idx1) => {
-                        let s = &e[idx1 + magic_process_header.len()..];
-                        match s.find(';') {
-                            Some(idx2) => {
-                                let name = String::from(&s[0..idx2]);
-                                debug!("{} found", &name);
-                                match c.monitored_devices_mut().get_mut(&name) {
-                                    Some(mi) => match &mut mi.associated_process_information {
-                                        Some(api) => {
-                                            api.pid = Some(p.pid);
-                                            info!("{} attached with pid {}", &name, p.pid);
-                                        }
-                                        None => {}
-                                    },
-                                    None => {}
+
+                if let Some(idx1) = e.find(&magic_process_header) {
+                    let s = &e[idx1 + magic_process_header.len()..];
+                    if let Some(idx2) = s.find(';') {
+                        let name = String::from(&s[0..idx2]);
+                        debug!("{} found", &name);
+
+                        if let Some(mi) = c.monitored_devices_mut().get_mut(&name) {
+                            match &mut mi.associated_process_information {
+                                Some(api) => {
+                                    api.pid = Some(p.pid);
+                                    info!("{} attached with pid {}", &name, p.pid);
                                 }
+                                None => {}
                             }
-                            None => {}
                         }
+
+                        // match c.monitored_devices_mut().get_mut(&name) {
+                        //     Some(mi) => match &mut mi.associated_process_information {
+                        //         Some(api) => {
+                        //             api.pid = Some(p.pid);
+                        //             info!("{} attached with pid {}", &name, p.pid);
+                        //         }
+                        //         None => {}
+                        //     },
+                        //     None => {}
+                        // }
                     }
-                    None => {}
                 }
             }
         }
