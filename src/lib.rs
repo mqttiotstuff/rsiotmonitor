@@ -5,6 +5,14 @@ pub mod process;
 
 pub mod state;
 
+pub mod httpserver;
+
+pub mod mqtt_utils;
+
+pub mod history;
+
+pub mod config;
+
 use std::{
     collections::HashMap,
     sync::Arc,
@@ -12,75 +20,20 @@ use std::{
 };
 
 use derivative::Derivative;
+use history::History;
+
 use log::debug;
-use toml_parse::Value;
-
-pub mod httpserver;
-
-/// Mqtt connection properties and configuration
-#[derive(Debug, Clone)]
-pub struct MqttConfig {
-    /// Username to authenticate with, optional.
-    pub username: Option<String>,
-
-    /// Password to authenticate with, optional.
-    pub password: Option<String>,
-
-    /// Host to connect to, REQUIRED.
-    pub url: String,
-
-    /// monitoring base topic
-    pub base_topic: String,
-
-    /// Client ID to identify as, optional.
-    pub client_id: Option<String>,
-
-    /// Enable TLS and set the path to a PEM file containing the
-    /// CA certificate that signs the remote server's certificate.
-    pub tls_server_ca_file: Option<String>,
-
-    /// Enable TLS and trust the CA certificates in the webpki-roots
-    /// crate, ultimately Mozilla's root certificates.
-    pub tls_mozilla_root_cas: bool,
-
-    /// Enable TLS and set the path to a PEM file containing the
-    /// client certificate for client authentication.
-    pub tls_client_crt_file: Option<String>,
-
-    /// Enable TLS and set the path to a PEM file containing the
-    /// client rsa key for client authentication.
-    pub tls_client_rsa_key_file: Option<String>,
-
-    /// Keepalive interval in seconds
-    pub keep_alive: u16,
-
-    /// Operation timeout in seconds
-    pub op_timeout: u16,
-}
-
-impl Default for MqttConfig {
-    fn default() -> Self {
-        MqttConfig {
-            username: None,
-            password: None,
-            url: "".into(),
-            base_topic: "iotmonitor/monitoring".into(),
-            client_id: None,
-            tls_server_ca_file: None,
-            tls_mozilla_root_cas: false,
-            tls_client_crt_file: None,
-            tls_client_rsa_key_file: None,
-            keep_alive: 10,
-            op_timeout: 10,
-        }
-    }
-}
 
 /// General iotmonitor configuration, with mqtt configuration and monitored device or agents
 #[derive(Derivative)]
 #[derivative(Debug)]
 pub struct IOTMonitor {
-    pub mqtt_config: MqttConfig,
+    pub mqtt_config: crate::config::MqttConfig,
+
+    pub history_topic: Option<String>,
+
+    #[derivative(Debug = "ignore")]
+    pub history: Option<Box<History>>,
 
     #[derivative(Debug = "ignore")]
     pub state_connection: Option<Arc<sqlite::ConnectionWithFullMutex>>,
@@ -91,16 +44,20 @@ pub struct IOTMonitor {
 
 impl IOTMonitor {
     pub fn new(
-        mqtt_config: MqttConfig,
+        mqtt_config: crate::config::MqttConfig,
         state_connection: Option<Arc<sqlite::ConnectionWithFullMutex>>,
         monitored_devices: HashMap<String, Box<MonitoringInfo>>,
+        history_topic: Option<String>,
+        history: Option<Box<History>>,
     ) -> Self {
-        let config = IOTMonitor {
+        // return the IOTMonitor structure
+        IOTMonitor {
             mqtt_config: mqtt_config,
-            monitored_devices: monitored_devices,
+            monitored_devices,
             state_connection: None,
-        };
-        config
+            history_topic,
+            history,
+        }
     }
 
     pub fn monitored_devices(&self) -> &HashMap<String, Box<MonitoringInfo>> {
@@ -110,21 +67,6 @@ impl IOTMonitor {
     pub fn monitored_devices_mut(&mut self) -> &mut HashMap<String, Box<MonitoringInfo>> {
         &mut self.monitored_devices
     }
-}
-
-#[derive(Debug)]
-pub struct AdditionalProcessInformation {
-    // pid is to track the process while running
-    pub pid: Option<u32>,
-    // process identifier attributed by IOTMonitor, to track existing processes
-    // processIdentifier: []const u8 = "",
-    pub exec: String,
-
-    // last time the process is restarted
-    pub last_restarted: Option<SystemTime>,
-
-    // number of time, the process is restarted
-    pub restarted_count: u64,
 }
 
 /// information about the monitored item (process or device)
@@ -148,9 +90,23 @@ pub struct MonitoringInfo {
     /// for agent this property hold the additional informations
     /// used for process launched or relaunched
     pub associated_process_information: Option<Box<AdditionalProcessInformation>>,
-
     /// count of the hello topic watched
     pub hello_count: u32,
+}
+
+#[derive(Debug)]
+pub struct AdditionalProcessInformation {
+    // pid is to track the process while running
+    pub pid: Option<u32>,
+    // process identifier attributed by IOTMonitor, to track existing processes
+    // processIdentifier: []const u8 = "",
+    pub exec: String,
+
+    // last time the process is restarted
+    pub last_restarted: Option<SystemTime>,
+
+    // number of time, the process is restarted
+    pub restarted_count: u64,
 }
 
 const INITIAL_DELAY_FOR_CHECKING: u64 = 30;
@@ -159,7 +115,7 @@ const INITIAL_DELAY_FOR_CHECKING: u64 = 30;
 impl MonitoringInfo {
     pub fn create(name: String) -> Box<MonitoringInfo> {
         let b: MonitoringInfo = MonitoringInfo {
-            name: name.clone(),
+            name,
             watch_topics: Vec::new(),
             associated_process_information: None,
             enabled: true,
@@ -173,111 +129,17 @@ impl MonitoringInfo {
         Box::new(b)
     }
 
-    pub fn update_next_contact(self: &mut Self) {
+    pub fn update_next_contact(&mut self) {
         self.next_contact = Some(SystemTime::now());
     }
 
-    pub fn has_expired(self: &Self) -> bool {
+    pub fn has_expired(&self) -> bool {
         if let Some(next_time) = self.next_contact {
             let current_time = SystemTime::now();
             let expired: bool = current_time > next_time + self.timeout_value;
             expired
         } else {
             false
-        }
-    }
-}
-
-/// in parsing, update the monitoinfo
-pub fn update_monitorinfo_from_config_table(
-    monitor_info: &mut MonitoringInfo,
-    table: &toml_parse::Table,
-) {
-    for kv in table.items() {
-        if let Some(keyname) = kv.key() {
-            match kv.value() {
-                Value::StrLit(s) => {
-                    // watchTimeOut : watch dog for alive state, when the timeout is reached without and interactions on watchTopics, then iotmonitor trigger an expire message for the device
-                    // helloTopic : the topic to observe to welcome the device. This topic trigger the state recovering for the device and agents. IotMonitor, resend the previous stored stateTopics
-                    // watchTopics : the topic pattern to observe to know the device is alive
-                    // stateTopics : list of topics for recording the states and reset them as they are welcomed
-
-                    if keyname == "watchTopics" {
-                        let mut topicList = Vec::new();
-                        topicList.push(s.clone());
-                        monitor_info.watch_topics = topicList;
-                    } else if keyname == "stateTopics" {
-                        monitor_info.state_topic = Some(s.clone());
-                    } else if keyname == "helloTopic" {
-                        monitor_info.hello_topic = Some(s.clone());
-                    } else if keyname == "watchTimeOut" {
-                        let d = s.parse::<u64>().unwrap();
-                        let duration = Duration::from_secs(d);
-                        monitor_info.timeout_value = duration;
-                    } else {
-                        debug!("unknown key {}", &keyname);
-                    }
-                }
-                _ => (),
-            }
-        }
-    }
-}
-
-pub fn read_process_informations_from_config_table(
-    monitor_info: &mut MonitoringInfo,
-    table: &toml_parse::Table,
-) {
-    let mut additional_process_info = AdditionalProcessInformation {
-        exec: "".into(),
-        last_restarted: None,
-        pid: None,
-        restarted_count: 0,
-    };
-
-    for kv in table.items() {
-        if let Some(keyname) = kv.key() {
-            match kv.value() {
-                Value::StrLit(s) => {
-                    if keyname == "exec" {
-                        additional_process_info.exec = s.clone();
-                    }
-                }
-                _ => (),
-            }
-        }
-    }
-
-    monitor_info.associated_process_information = Some(Box::new(additional_process_info));
-}
-
-pub fn read_mqtt_config_table(config: &mut MqttConfig, table: &toml_parse::Table) {
-    assert!(table.header() == "mqtt");
-    for kv in table.items() {
-        if let Some(keyname) = kv.key() {
-            match kv.value() {
-                Value::StrLit(s) => match keyname {
-                    "serverAddress" => {
-                        config.url = s.clone();
-                    }
-                    "baseTopic" => {
-                        config.base_topic = s.clone();
-                    }
-                    "password" => {
-                        config.password = Some(s.clone());
-                    }
-                    "clientid" => {
-                        config.client_id = Some(s.clone());
-                    }
-                    "user" => {
-                        config.username = Some(s.clone());
-                    }
-                    s => {
-                        panic!("unknown mqtt section property : {}", s);
-                    }
-                },
-                _ => (),
-            }
         }
     }
 }

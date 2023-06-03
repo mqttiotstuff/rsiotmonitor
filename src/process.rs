@@ -1,11 +1,13 @@
-use std::ffi::{CStr, CString};
+use std::ffi::{CString};
+use std::fmt;
 use std::fs::{read_dir, DirEntry, File, FileType, ReadDir};
-use std::path::Path;
+use std::path::{Path};
 use std::process::Stdio;
 
 use log::{debug, info};
-use mqtt_async_client::Result;
 use nix::unistd::setsid;
+use std::error::Error;
+use std::result::Result;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 
@@ -20,7 +22,7 @@ pub struct ProcessInformation {
 }
 
 /// get the process information structure from the pid
-pub fn get_process_information(pid: u32) -> Result<ProcessInformation> {
+pub fn get_process_information(pid: u32) -> Result<ProcessInformation, Box<dyn Error>> {
     // read elements in process
     use std::io::{BufRead, BufReader};
 
@@ -37,7 +39,7 @@ pub fn get_process_information(pid: u32) -> Result<ProcessInformation> {
     }
 
     Ok(ProcessInformation {
-        pid: pid,
+        pid,
         commmand_line_elements: v,
     })
 }
@@ -50,7 +52,7 @@ pub struct ProcessIterator {
 
 /// process iterator to watch the running processes
 impl ProcessIterator {
-    pub fn new() -> Result<ProcessIterator> {
+    pub fn new() -> Result<ProcessIterator, Box<dyn Error>> {
         let dir: &Path = Path::new("/proc");
         let entries = read_dir(dir)?;
         Ok(ProcessIterator {
@@ -104,11 +106,26 @@ fn test_iterator() {
     }
 }
 
+#[derive(Debug)]
+struct ProcessError {
+    message: String,
+}
 
-/// create the process
-pub fn run_process_with_fork(name: &String, processinfo: &mut AdditionalProcessInformation) -> Result<()> {
-    
-    let MAGICPROCSSHEADER: String = String::from(MAGIC) + "_";
+impl fmt::Display for ProcessError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "Process error {}", self.message)
+    }
+}
+
+impl Error for ProcessError {}
+
+/// create the process, using fork
+pub fn run_process_with_fork(
+    name: &String,
+    processinfo: &mut AdditionalProcessInformation,
+) -> Result<(), Box<dyn std::error::Error>> {
+
+    let magicprocessheader: String = String::from(MAGIC) + "_";
 
     use nix::sys::signal::*;
     use nix::unistd::{execv, fork, ForkResult};
@@ -117,30 +134,42 @@ pub fn run_process_with_fork(name: &String, processinfo: &mut AdditionalProcessI
             let u: i32 = child.into();
             let r: u32 = u.try_into().unwrap();
             processinfo.pid = Some(r);
-            info!("pid created for {} : {}", &name,r);
+            info!("pid created for {} : {}", &name, r);
             unsafe {
                 // avoid creating zombi when child exit
-                signal(Signal::SIGCHLD, SigHandler::SigIgn);
+                if let Err(e) = signal(Signal::SIGCHLD, SigHandler::SigIgn) {
+                    return Err(Box::new(ProcessError {
+                        message: format!("error in signal {}", e),
+                    }));
+                }
             }
         }
         Ok(ForkResult::Child) => {
             let exec = format!(
                 "echo {};{};echo END",
-                MAGICPROCSSHEADER + name,
+                magicprocessheader + name,
                 processinfo.exec
             );
-            debug!("running {} , {}",&name ,&exec);
+            debug!("running {} , {}", &name, &exec);
             let args = &[
                 &CString::new("/bin/bash").unwrap(),
                 &CString::new("-c").unwrap(),
-                &CString::new(exec.clone()).unwrap(),
+                &CString::new(exec).unwrap(),
             ];
 
             // dissociate from its parent
-            setsid();
-            // replace the process
-            execv(&CString::new("/bin/bash").unwrap(), args);
-            return Ok(());
+            if let Err(e) = setsid() {
+                return Err(Box::new(ProcessError {
+                    message: format!("error for setuid {}", e),
+                }));
+            }
+
+            return match execv(&CString::new("/bin/bash").unwrap(), args) {
+                Ok(_) => Ok(()),
+                Err(e) => Err(Box::new(ProcessError {
+                    message: format!("error in exec {}", e),
+                })),
+            };
         }
         Err(_) => println!("Fork failed"),
     }
@@ -148,13 +177,15 @@ pub fn run_process_with_fork(name: &String, processinfo: &mut AdditionalProcessI
 }
 
 /// launch the process with the IOTMONITORING tag
-pub fn launch_process(name: &String, processinfo: &mut AdditionalProcessInformation) -> Result<()> {
-    
-    let MAGICPROCSSHEADER: String = String::from(MAGIC) + "_";
+pub fn launch_process(
+    name: &String,
+    processinfo: &mut AdditionalProcessInformation,
+) -> Result<(), Box<dyn Error>> {
+    let magicprocessheader: String = String::from(MAGIC) + "_";
 
     let exec = format!(
         "echo {};{};echo END",
-        MAGICPROCSSHEADER + name,
+        magicprocessheader + name,
         processinfo.exec
     );
 
@@ -162,7 +193,7 @@ pub fn launch_process(name: &String, processinfo: &mut AdditionalProcessInformat
 
     let mut cmd = Command::new("bash");
     let all = cmd
-        .args(&["-c", &exec])
+        .args(["-c", &exec])
         .env("IOTMONITORMAGIC", name.clone());
 
     // Specify that we want the command's standard output piped back to us.

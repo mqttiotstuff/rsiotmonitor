@@ -7,7 +7,7 @@ edition = "2021"
 
 chrono = "^0.4.23"
 
-env_logger = "0.7.1"
+env_logger = "0.10.0"
 
 # bytes = "0.4.0"
 futures-core = "0.3.1"
@@ -20,7 +20,7 @@ mqtt-async-client = "0.3.1"
 rustls = { version = "0.19.0", optional = true }
 structopt = "0.3.5"
 tokio = { version = "1.24.2", features = ["io-util", "macros", "net", "rt", "process", "rt-multi-thread", "sync", "time"] }
-tokio-rustls = { version = "0.22.0", optional = true }
+tokio-rustls = { version = "0.24.0", optional = true }
 
 toml-parse = { path="deps/toml-parse" }
 webpki-roots = "0.18.0"
@@ -32,30 +32,28 @@ nix= "0.26.2"
 derivative = "2.2.0"
 mqtt-v5-broker = { path="deps/mqtt-broker/mqtt-v5-broker" }
 
-
 hyper={ version = "0.14.23", features = ["full"] }
-
 tower = { version = "0.4", features = ["full"] }
 tower-http =  { version="0.3.5", features = ["full"] }
 http = "0.2.8"
 http-body = "0.4.5"
 
+leveldb = "0.8.6"
+db-key = "0.0.5"
 
+rusty-leveldb = "1.0.6"
 
 mlua = { version = "0.8", features = ["lua54", "vendored"] }
-
 
 [features]
 default = ["tls"]
 tls = ["rustls", "tokio-rustls"]
-
 
 [profile.release]
 opt-level = "z"  # Optimize for size.
 codegen-units = 1
 panic = "abort"
 lto = true
-
 
 [dependencies.sqlite3-src]
 version="0.4.0"

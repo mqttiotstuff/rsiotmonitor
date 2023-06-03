@@ -6,11 +6,12 @@
 serverAddress="mqtt://127.0.0.1:1883"
 clientid="iotmonitorfhome2"
 
+[history]
+storageTopic="home/#"
 
 [device_esp04]
 watchTimeOut=60
 helloTopic="home/esp04"
 watchTopics="home/esp04/sensors/#"
 stateTopics="home/esp04/actuators/#"
-
 
