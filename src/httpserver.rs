@@ -1,10 +1,7 @@
-use http::{
-   
-    Request, Response,
-};
+use http::{Request, Response};
 use hyper::{server::Server, Body, Error};
-use std::{net::SocketAddr};
-use tower::{make::Shared,ServiceBuilder};
+use std::net::SocketAddr;
+use tower::{make::Shared, ServiceBuilder};
 use tower_http::{compression::CompressionLayer, trace::TraceLayer};
 
 // Our request handler. This is where we would implement the application logic
