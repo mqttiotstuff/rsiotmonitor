@@ -23,23 +23,26 @@ use derivative::Derivative;
 use history::History;
 
 use log::debug;
+use tokio_cron_scheduler::JobScheduler;
 
 /// General iotmonitor configuration, with mqtt configuration and monitored device or agents
 #[derive(Derivative)]
 #[derivative(Debug)]
 pub struct IOTMonitor {
+
     pub mqtt_config: crate::config::MqttConfig,
 
     pub history_topic: Option<String>,
 
     #[derivative(Debug = "ignore")]
-    pub history: Option<Box<History>>,
+    pub history: Option<Arc<Box<History>>>,
 
     #[derivative(Debug = "ignore")]
     pub state_connection: Option<Arc<sqlite::ConnectionWithFullMutex>>,
 
     /// monitored elements
     monitored_devices: HashMap<String, Box<MonitoringInfo>>,
+
 }
 
 impl IOTMonitor {
@@ -48,7 +51,7 @@ impl IOTMonitor {
         state_connection: Option<Arc<sqlite::ConnectionWithFullMutex>>,
         monitored_devices: HashMap<String, Box<MonitoringInfo>>,
         history_topic: Option<String>,
-        history: Option<Box<History>>,
+        history: Option<Arc<Box<History>>>,
     ) -> Self {
         // return the IOTMonitor structure
         IOTMonitor {
@@ -56,7 +59,7 @@ impl IOTMonitor {
             monitored_devices,
             state_connection: None,
             history_topic,
-            history,
+            history
         }
     }
 

@@ -45,6 +45,8 @@ mlua = { version = "0.8", features = ["lua54", "vendored"] }
 
 parquet="39.0.0"
 
+tokio-cron-scheduler = "0.9.4"
+
 
 [features]
 default = ["tls"]

@@ -1,6 +1,7 @@
 use log::{debug, info};
+use tokio_cron_scheduler::JobScheduler;
 
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 use toml_parse::{Toml, Value};
 
@@ -129,13 +130,16 @@ pub async fn read_configuration() -> mqtt_async_client::Result<IOTMonitor> {
     let hash: HashMap<String, Box<MonitoringInfo>> =
         HashMap::from_iter(devices.into_iter().map(|e| (e.name.clone(), e)));
 
-    let mut opt_history: Option<Box<History>> = None;
+    let mut opt_history: Option<Arc<Box<History>>> = None;
     if let Some(_topics_history) = history_topic.clone() {
         info!("history initialization");
-        opt_history = Some(History::init().unwrap());
+        opt_history = Some(Arc::new(History::init().unwrap()));
     }
 
-    let iotmonitor = IOTMonitor::new(mqtt_config, None, hash, history_topic, opt_history);
+
+
+    let iotmonitor = IOTMonitor::new(mqtt_config, None, 
+        hash, history_topic, opt_history);
 
     Ok(iotmonitor)
 }

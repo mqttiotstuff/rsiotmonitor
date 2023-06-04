@@ -7,24 +7,18 @@ use leveldb::database::Database;
 use leveldb::iterator::Iterable;
 use leveldb::options::{Options, ReadOptions, WriteOptions};
 
-use db_key::Key;
 #[allow(unused_imports)]
 use log::{debug, error, info, trace, warn};
-use parquet::basic::Compression;
-use parquet::data_type::{
-    ByteArray, ByteArrayType, FixedLenByteArrayType, Int32Type, Int64Type, Int96,
-};
+use parquet::data_type::{ByteArray, ByteArrayType, Int64Type};
 use parquet::file::properties::WriterProperties;
 use parquet::file::writer::SerializedFileWriter;
-use parquet::format::StringType;
 use parquet::schema::parser::parse_message_type;
 
 use leveldb::util::FromU8;
 
 use std::error::Error;
 
-/// time stamp storage
-
+/// Content of the value column
 struct TopicPayload<'a> {
     topic: String,
     payload: &'a [u8],
@@ -65,6 +59,7 @@ impl Error for HistoryError {}
 pub struct History {
     database: Box<Database>,
 }
+
 
 impl History {
     /// init the history, and open the archive database
@@ -241,7 +236,7 @@ impl History {
             if let Some(last_timestamp) = last {
                 for (k, v) in self.database.iter(&ReadOptions::new()) {
                     let key_value = i64::from_u8(&k);
-                    
+
                     if let Err(e) = self.database.delete(&WriteOptions::new(), &key_value) {
                         warn!("error while deleting the value : {}", e);
                     }
