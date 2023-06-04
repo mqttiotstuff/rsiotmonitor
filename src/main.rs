@@ -542,11 +542,7 @@ async fn launch_mqtt_server(opt: Opt) -> Result<(), Box<dyn std::error::Error>> 
         let _r = websocket_server_loop(broker_tx).await;
     });
 
-    let http_server = tokio::task::spawn(async move {
-        httpserver::server_start().await;
-    });
-
-    try_join_all([broker, tcp_listener, websocket_listener, http_server]).await?;
+    try_join_all([broker, tcp_listener, websocket_listener]).await?;
 
     Ok(())
 }
@@ -569,7 +565,12 @@ async fn main() {
     }
 
     let config = crate::config::read_configuration().await.unwrap();
+    
     debug!("starting with config : {:?}\n", &config);
+
+    let _http_server = tokio::task::spawn(async move {
+        httpserver::server_start().await;
+    });
 
     start(config).await.unwrap();
 }
