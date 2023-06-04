@@ -290,22 +290,25 @@ async fn start(config: IOTMonitor) -> mqtt_async_client::Result<()> {
 
     if let Some(hist) = config.history.clone() {
         let mut sched = JobScheduler::new().await.unwrap();
-        
-        sched.add(
-            Job::new_async("0 0 0 1-31 * *",  move|uuid, l| 
-            { 
-                let local_hist = hist.clone();
-                Box::pin(async move {
-                let filename: String = Utc::now().format("events_%Y-%m-%d-%s.parquet").to_string();
-                info!("writing parquet segment {}", &filename);
-                if let Err(e) = local_hist.export_to_parquet(&filename, true) {
-                    error!("Error while exporting to parquet {}", e);
-                }
-            }) })
-            .unwrap(),
-        ).await.unwrap();
+
+        sched
+            .add(
+                Job::new_async("0 0 0 1-31 * *", move |uuid, l| {
+                    let local_hist = hist.clone();
+                    Box::pin(async move {
+                        let filename: String =
+                            Utc::now().format("events_%Y-%m-%d-%s.parquet").to_string();
+                        info!("writing parquet segment {}", &filename);
+                        if let Err(e) = local_hist.export_to_parquet(&filename, true) {
+                            error!("Error while exporting to parquet {}", e);
+                        }
+                    })
+                })
+                .unwrap(),
+            )
+            .await
+            .unwrap();
         sched.start().await.unwrap();
-        
     }
 
     // search for existing processes, and wrap their declaration
