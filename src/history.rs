@@ -60,7 +60,6 @@ pub struct History {
     database: Box<Database>,
 }
 
-
 impl History {
     /// init the history, and open the archive database
     pub fn init() -> Result<Box<History>, Box<dyn Error>> {
@@ -80,20 +79,29 @@ impl History {
         }))
     }
 
-    /// add a new event in the historical database
     pub fn store_event(&self, topic: String, payload: &[u8]) -> Result<(), Box<dyn Error>> {
-        let write_opts = WriteOptions::new();
         let instant = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap();
 
         let t: i64 = instant.as_micros().try_into().unwrap();
+        self.store_event_with_timestamp(t, topic, payload)
+    }
+
+    /// add a new event in the historical database
+    pub fn store_event_with_timestamp(
+        &self,
+        timestamp: i64,
+        topic: String,
+        payload: &[u8],
+    ) -> Result<(), Box<dyn Error>> {
+        let write_opts = WriteOptions::new();
 
         let p = TopicPayload { topic, payload };
 
         return p.as_slice(|payload_bytes| {
             debug!("payload : {:?}", payload_bytes);
-            match self.database.put(&write_opts, &t, payload_bytes) {
+            match self.database.put(&write_opts, &timestamp, payload_bytes) {
                 Ok(_) => Ok(()),
                 Err(e) => {
                     error!("failed to write to database: {:?}", e);
@@ -263,6 +271,42 @@ pub fn test_storage() {
     for i in h.database.iter(&ReadOptions::new()) {
         println!("{} : {:?}", &i64::from_u8(&i.0), &i.1);
     }
+}
+
+#[test]
+pub fn test_storage_timestamp() {
+    let h = History::init().unwrap();
+    let t: i64;
+    for t in 0..63 {
+        let e: i64 = 1 << t;
+        h.store_event_with_timestamp(e, "a".into(), "b".as_bytes())
+            .unwrap();
+    }
+
+    // dump
+
+    // writing rows ..
+    let mut cpt: u128 = 0;
+
+    let mut it = h.database.iter(&ReadOptions::new());
+
+    let mut row = it.next();
+    while row.is_some() {
+        if let Some(a) = row {
+            let timestamp = i64::from_u8(&a.0);
+
+            let tp = TopicPayload::from_u8(&a.1);
+            let topic = tp.topic;
+            let payload = tp.payload;
+
+            println!("{}", timestamp);
+
+            cpt += 1;
+            row = it.next();
+        }
+    }
+
+    h.export_to_parquet("final.parquet", true);
 }
 
 #[test]

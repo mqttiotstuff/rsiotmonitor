@@ -17,6 +17,6 @@ one can use datafusion-cli tools to sql query the event database
 
 create a view with decoded elements :
 
-create view history as select timestamp, arrow_cast(topic,'Utf8') as topic, arrow_cast(payload,'Utf8') as payload from 'h.parquet';
+create view history as select arrow_cast(timestamp,'Int64') as timestamp, arrow_cast(topic,'Utf8') as topic, arrow_cast(payload,'Utf8') as payload from 'events*.parquet';
 
 

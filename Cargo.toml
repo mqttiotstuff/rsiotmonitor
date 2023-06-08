@@ -8,11 +8,12 @@ edition = "2021"
 chrono = "^0.4.23"
 
 env_logger = "0.10.0"
+log = "0.4.8"
 
 # bytes = "0.4.0"
 futures-core = "0.3.1"
 futures-util = "0.3.1"
-log = "0.4.8"
+
 
 maplit = "1.0.2"
 mqtt-async-client = "0.3.1"
