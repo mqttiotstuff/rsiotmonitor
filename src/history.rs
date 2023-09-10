@@ -111,6 +111,7 @@ impl History {
         });
     }
 
+    // export the current database events to a parquet file
     pub fn export_to_parquet(
         &self,
         output_file: &str,
@@ -125,6 +126,7 @@ impl History {
             REQUIRED binary payload;
           }
         ";
+
         let schema = Arc::new(parse_message_type(record_type).unwrap());
         let props = Arc::new(
             WriterProperties::builder()
@@ -134,7 +136,7 @@ impl History {
         let file = fs::File::create(&path).unwrap();
         let mut writer = SerializedFileWriter::new(file, schema, props).unwrap();
 
-        // writing rows ..
+        // writing rows count ..
         let mut cpt: u128 = 0;
 
         let mut it = self.database.iter(&ReadOptions::new());
@@ -152,7 +154,8 @@ impl History {
             let mut all_timestamps: Vec<i64> = Vec::new();
             let mut all_payloads: Vec<Vec<u8>> = Vec::new();
 
-            while row.is_some() && (cpt % 10_000) != 0 {
+            // read 10_000 rows in the memory vector to create the parquet group
+            while row.is_some() && cpt % 10_000 != 0 {
                 if let Some(a) = row.as_ref() {
                     let timestamp = i64::from_u8(&a.0);
                     last = Some(timestamp);
@@ -168,13 +171,15 @@ impl History {
                     all_timestamps.push(tbytes);
 
                     cpt += 1;
+                    if cpt % 10_000 == 0 {
+                        debug!("{} elements exported", cpt);
+                    }
                     row = it.next();
                 }
             }
 
+            // write the rows in the parquet file
             if let Some(mut col_writer) = row_group_writer.next_column().unwrap() {
-                // write all
-
                 col_writer
                     .typed::<Int64Type>()
                     .write_batch(
@@ -276,7 +281,6 @@ pub fn test_storage() {
 #[test]
 pub fn test_storage_timestamp() {
     let h = History::init().unwrap();
-    let t: i64;
     for t in 0..63 {
         let e: i64 = 1 << t;
         h.store_event_with_timestamp(e, "a".into(), "b".as_bytes())
@@ -285,11 +289,10 @@ pub fn test_storage_timestamp() {
 
     // dump
 
-    // writing rows ..
     let mut cpt: u128 = 0;
-
     let mut it = h.database.iter(&ReadOptions::new());
 
+    // writing rows ..
     let mut row = it.next();
     while row.is_some() {
         if let Some(a) = row {

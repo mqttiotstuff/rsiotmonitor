@@ -1,11 +1,11 @@
-use std::ffi::{CString};
+use std::ffi::CString;
 use std::fmt;
 use std::fs::{read_dir, DirEntry, File, FileType, ReadDir};
-use std::path::{Path};
+use std::path::Path;
 use std::process::Stdio;
 
 use log::{debug, info};
-use nix::unistd::setsid;
+use nix::unistd::{setsid};
 use std::error::Error;
 use std::result::Result;
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -192,9 +192,7 @@ pub fn launch_process(
     // construct command line
 
     let mut cmd = Command::new("bash");
-    let all = cmd
-        .args(["-c", &exec])
-        .env("IOTMONITORMAGIC", name.clone());
+    let all = cmd.args(["-c", &exec]).env("IOTMONITORMAGIC", name.clone());
 
     // Specify that we want the command's standard output piped back to us.
     // By default, standard input/output/error will be inherited from the

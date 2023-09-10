@@ -1,8 +1,61 @@
 
 
 
-create view esp3_wifi as select timestamp, split_part(payload,',',1) as spot, arrow_cast(split_part(payload,',',2), 'Int64') as rssi from history where topic = 'home/esp03/sensors/wifilocation' and strpos(split_part(payload,',',2),':') = 0 ;
+create external table mqtt(timestamp bigint unsigned, topic bytea, payload bytea) stored as parquet with order (timestamp)   location 'history_archive/*.parquet';
 
+note : partition by cannot be done, in hive format (need stable sharding)
+
+select * from mqtt where arrow_cast(timestamp,'Timestamp(Microsecond,None)') > to_timestamp('2023-09-07') limit 10;
+
+
+
+ANALYZING ESP WIFI RECORDS:
+
+create view esp3_wifi_location as select arrow_cast('esp03','Utf8') as device, arrow_cast(timestamp,'Timestamp(Microsecond,None)') as timestamp, split_part(arrow_cast(payload,'Utf8'),',',1) as spot, payload from mqtt where arrow_cast(topic,'Utf8') = 'home/esp03/sensors/wifilocation' ;
+
+create view esp11_wifi_location as select arrow_cast('esp11','Utf8') as device, arrow_cast(timestamp,'Timestamp(Microsecond,None)') as timestamp, split_part(arrow_cast(payload,'Utf8'),',',1) as spot, payload from mqtt where arrow_cast(topic,'Utf8') = 'home/esp11/sensors/wifilocation' ;
+
+create a physical view of the wifi locations, for a given date :
+
+copy (with x as (select * from esp3_wifi_location where timestamp > to_timestamp('2023-09-07') union select * from esp11_wifi_location where timestamp > to_timestamp('2023-09-07') ) select * from x order by timestamp) to 'wifi_location_device.parquet';
+
+decode extra elements :
+create or replace view wifi_locations as select timestamp, device, spot, arrow_cast(split_part(arrow_cast(payload,'Utf8'),',',2), 'Int64') as rssi from 'wifi_location_device.parquet' where strpos(split_part(arrow_cast(payload,'Utf8'),',',2),':') = 0 ;
+
+select device, count(*) from wifi_locations group by device;
+
+get current connected elements :
+
+create or replace view evts as select date_trunc('day',arrow_cast(timestamp,'Timestamp(Microsecond,None)')) as d,device,spot, count(timestamp) as nb, mean(rssi), stddev(rssi) from wifi_locations group by d,device,spot order by spot,d;
+
+select * from evts;
+
+un spot spécifique :
+
+select * from wifi_locations where spot='ambrounette:3' order by timestamp;
+
+select min(date_bin('1 day',timestamp, now())) from wifi_locations;
+
+Weather:
+--------
+
+create view weather as select arrow_cast(timestamp,'Timestamp(Microsecond,None)') as timestamp, arrow_cast(payload,'Utf8') as payload from mqtt where arrow_cast(topic,'Utf8') = 'home/agents/weather/temperature' ;
+
+select * from weather where timestamp > to_timestamp('2023-09-08');
+
+
+Experiments :
+--------
+
+copy (with x as (select * from esp3_wifi_location union select * from esp11_wifi_location) select * from x) to 'wifi_location_device.parquet' (ROW_GROUP_LIMIT_BYTES 10000000);
+
+create or replace view esp3_wifi as select timestamp, spot, arrow_cast(split_part(arrow_cast(payload,'Utf8'),',',2), 'Int64') as rssi from esp3_wifi_location where strpos(split_part(arrow_cast(payload,'Utf8'),',',2),':') = 0 ;
+or :
+
+copy (select timestamp, spot, arrow_cast(split_part(arrow_cast(payload,'Utf8'),',',2), 'Int64') as rssi from 'esp3.parquet' where strpos(split_part(arrow_cast(payload,'Utf8'),',',2),':') = 0 ) to 'esp3_wifi.parquet' (ROW_GROUP_LIMIT_BYTES 10000000);
+
+
+create or replace view esp3_wifi_canal as select timestamp, split_part(spot,':',1) as spot, split_part(spot,':',2) as canal, rssi from esp3_wifi;
 
  select * from esp3_wifi limit 10;
 +------------------+----------------------------+------+
@@ -25,4 +78,29 @@ create view esp3_wifi as select timestamp, split_part(payload,',',1) as spot, ar
 analyse de moyennes glissantes :
 
 select spot, rssi, avg(rssi) over (order by timestamp asc range between 3 PRECEDING and 3 FOLLOWING ) from esp3_wifi;
+
+
+
+arrondir au jour la date :
+
+select date_bin('1 day',timestamp, now()) from esp3_wifi
+
+messages spots par jours perçu par esp3:
+----------------------------------------
+
+select date_trunc('day',arrow_cast(timestamp,'Timestamp(Microsecond,None)')) as d,spot, count(timestamp) from esp3_wifi_canal group by d,spot order by d;
+
+ou avec la table stockée :
+
+create or replace view evts as select date_trunc('day',arrow_cast(timestamp,'Timestamp(Microsecond,None)')) as d,spot, count(timestamp) as nb from 'esp3_wifi.parquet' group by d,spot order by d;
+
+
+
+ANALYZING METEO_TEMPERATURE
+---------------------------
+
+create or replace view ext_temperature as select timestamp, arrow_cast(timestamp,'Timestamp(Microsecond,None)') as time, arrow_cast(arrow_cast(payload,'Utf8'),'Float32')/100 as temperature from '.' where arrow_cast(topic,'Utf8') = 'home/agents/meteo/temperature';
+
+select date_trunc('day',arrow_cast(timestamp,'Timestamp(Microsecond,None)')) as d,avg(temperature) from ext_temperature group by d order by d;
+
 

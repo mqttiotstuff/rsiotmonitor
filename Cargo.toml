@@ -14,6 +14,7 @@ log = "0.4.8"
 futures-core = "0.3.1"
 futures-util = "0.3.1"
 
+nix = { version= "0.27.1", features=["signal"]}
 
 maplit = "1.0.2"
 mqtt-async-client = "0.3.1"
@@ -27,8 +28,6 @@ toml-parse = { path="deps/toml-parse" }
 webpki-roots = "0.18.0"
 
 sqlite="0.30.3"
-
-nix= "0.26.2"
 
 derivative = "2.2.0"
 mqtt-v5-broker = { path = "deps/mqtt-broker/mqtt-v5-broker" }
@@ -44,9 +43,10 @@ db-key = "0.0.5"
 
 mlua = { version = "0.8", features = ["lua54", "vendored"] }
 
-parquet="39.0.0"
+parquet="43.0.0"
 
 tokio-cron-scheduler = "0.9.4"
+
 
 
 [features]

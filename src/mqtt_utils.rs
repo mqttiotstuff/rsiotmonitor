@@ -112,6 +112,7 @@ pub fn does_topic_match(tested_topic: &String, evaluated_topic: &String) -> bool
     }
 }
 
+/// Test does_topic_match function
 #[test]
 fn test_does_topic_match() {
     assert_eq!(

@@ -23,7 +23,12 @@ use structopt::StructOpt;
 use tokio::{net::TcpListener, time::Duration};
 
 use rsiotmonitor::{process::ProcessIterator, *};
-use std::{io, sync::Arc, time::SystemTime};
+use std::{
+    io,
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::SystemTime,
+};
 use tokio_cron_scheduler::{Job, JobScheduler};
 
 use crate::mqtt_utils::*;
@@ -289,15 +294,21 @@ async fn start(config: IOTMonitor) -> mqtt_async_client::Result<()> {
     // set scheduling
 
     if let Some(hist) = config.history.clone() {
-        let mut sched = JobScheduler::new().await.unwrap();
+        let sched = JobScheduler::new().await.unwrap();
 
         sched
             .add(
-                Job::new_async("0 0 0 1-31 * *", move |uuid, l| {
+                // every days at 00:00Z
+                Job::new_async("0 0 0 1-31 * *", move |_uuid, _l| {
                     let local_hist = hist.clone();
                     Box::pin(async move {
-                        let filename: String =
-                            Utc::now().format("events_%Y-%m-%d-%s.parquet").to_string();
+                        if let Err(e) = std::fs::create_dir(PathBuf::from("history_archive")) {
+                            error!("cannot create hitory_archive : {}", e);
+                        }
+
+                        let filename: String = Utc::now()
+                            .format("history_archive/events_%Y-%m-%d-%s.parquet")
+                            .to_string();
                         info!("writing parquet segment {}", &filename);
                         if let Err(e) = local_hist.export_to_parquet(&filename, true) {
                             error!("Error while exporting to parquet {}", e);
@@ -595,7 +606,7 @@ async fn main() {
     debug!("starting with config : {:?}\n", &config);
 
     let _http_server = tokio::task::spawn(async move {
-        httpserver::server_start().await;
+        httpserver::server_start(([0.0.0.0],3000)).await;
     });
 
     start(config).await.unwrap();
