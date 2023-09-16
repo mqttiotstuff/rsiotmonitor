@@ -1,5 +1,4 @@
 use log::{debug, info};
-use tokio_cron_scheduler::JobScheduler;
 
 use std::{collections::HashMap, sync::Arc};
 
@@ -8,6 +7,9 @@ use toml_parse::{Toml, Value};
 use crate::{history::History, AdditionalProcessInformation, IOTMonitor, MonitoringInfo};
 
 use std::time::Duration;
+
+use std::iter::FromIterator;
+
 
 /// Mqtt connection properties and configuration
 #[derive(Debug, Clone)]
@@ -138,7 +140,7 @@ pub async fn read_configuration() -> mqtt_async_client::Result<IOTMonitor> {
 
 
 
-    let iotmonitor = IOTMonitor::new(mqtt_config, None, 
+    let iotmonitor = IOTMonitor::new(mqtt_config, 
         hash, history_topic, opt_history);
 
     Ok(iotmonitor)

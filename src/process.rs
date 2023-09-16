@@ -13,6 +13,9 @@ use tokio::process::Command;
 
 use crate::AdditionalProcessInformation;
 
+use std::convert::TryInto;
+
+
 pub const MAGIC: &str = "IOTMONITORMAGIC";
 
 #[derive(Debug)]

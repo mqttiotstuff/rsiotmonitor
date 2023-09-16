@@ -1,6 +1,9 @@
-use log::debug;
+
 
 use sqlite::{self, Connection, ConnectionWithFullMutex, Result, State};
+
+#[allow(unused_imports)]
+use log::{ debug };
 
 pub fn init() -> Result<ConnectionWithFullMutex> {
     let connection = Connection::open_with_full_mutex("iotstates.db").unwrap();

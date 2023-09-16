@@ -1,11 +1,20 @@
 
 
 
-create external table mqtt(timestamp bigint unsigned, topic bytea, payload bytea) stored as parquet with order (timestamp)   location 'history_archive/*.parquet';
+create external table mqtt(timestamp bigint, topic bytea, payload bytea) stored as parquet with order (timestamp)   location 'history_archive/*.parquet';
 
-note : partition by cannot be done, in hive format (need stable sharding)
+note : partition by cannot be done, in hive format (need stable sharding, timestamp is not enougth)
 
 select * from mqtt where arrow_cast(timestamp,'Timestamp(Microsecond,None)') > to_timestamp('2023-09-07') limit 10;
+
+// create an extract with month and year extracted
+copy (select timestamp, topic, payload, arrow_cast(date_part('day',arrow_cast(timestamp,'Timestamp(Microsecond,None)')), 'Int8') as day, arrow_cast(date_part('month',arrow_cast(timestamp,'Timestamp(Microsecond,None)')), 'Int8') as month, arrow_cast(date_part('year',arrow_cast(timestamp,'Timestamp(Microsecond,None)')), 'Int16') as year from mqtt) to 'events_with_date' (FORMAT parquet,SINGLE_FILE_OUTPUT false);
+
+
+### datashared:
+
+
+create external table mqtt_hive(year int,month int, day int, timestamp bigint, topic bytea, payload bytea) stored as parquet partitioned by (year,month,day)  location 'hive'
 
 
 
@@ -15,7 +24,7 @@ create view esp3_wifi_location as select arrow_cast('esp03','Utf8') as device, a
 
 create view esp11_wifi_location as select arrow_cast('esp11','Utf8') as device, arrow_cast(timestamp,'Timestamp(Microsecond,None)') as timestamp, split_part(arrow_cast(payload,'Utf8'),',',1) as spot, payload from mqtt where arrow_cast(topic,'Utf8') = 'home/esp11/sensors/wifilocation' ;
 
-create a physical view of the wifi locations, for a given date :
+### create a physical view of the wifi locations, for a given date :
 
 copy (with x as (select * from esp3_wifi_location where timestamp > to_timestamp('2023-09-07') union select * from esp11_wifi_location where timestamp > to_timestamp('2023-09-07') ) select * from x order by timestamp) to 'wifi_location_device.parquet';
 

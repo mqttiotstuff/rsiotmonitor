@@ -3,18 +3,21 @@ use std::sync::Arc;
 use std::time::SystemTime;
 use std::{fmt, fs, u128};
 
+use chrono::Datelike;
 use leveldb::database::Database;
 use leveldb::iterator::Iterable;
 use leveldb::options::{Options, ReadOptions, WriteOptions};
 
 #[allow(unused_imports)]
 use log::{debug, error, info, trace, warn};
-use parquet::data_type::{ByteArray, ByteArrayType, Int64Type};
+use parquet::data_type::{ByteArray, ByteArrayType, Int64Type, Int32Type};
 use parquet::file::properties::WriterProperties;
 use parquet::file::writer::SerializedFileWriter;
 use parquet::schema::parser::parse_message_type;
 
 use leveldb::util::FromU8;
+
+use std::convert::TryInto;
 
 use std::error::Error;
 
@@ -54,6 +57,7 @@ impl fmt::Display for HistoryError {
         write!(f, "history error")
     }
 }
+
 impl Error for HistoryError {}
 
 pub struct History {
@@ -121,6 +125,9 @@ impl History {
 
         let record_type = "
           message schema {
+            REQUIRED Int32 day;
+            REQUIRED Int32 month;
+            REQUIRED Int32 year;
             REQUIRED Int64 timestamp;
             REQUIRED binary topic;
             REQUIRED binary payload;
@@ -137,7 +144,7 @@ impl History {
         let mut writer = SerializedFileWriter::new(file, schema, props).unwrap();
 
         // writing rows count ..
-        let mut cpt: u128 = 0;
+        let mut cpt: u128;
 
         let mut it = self.database.iter(&ReadOptions::new());
 
@@ -152,6 +159,9 @@ impl History {
 
             let mut all_topics: Vec<String> = Vec::new();
             let mut all_timestamps: Vec<i64> = Vec::new();
+            let mut all_year: Vec<i32> = Vec::new();
+            let mut all_month: Vec<i32> = Vec::new();
+            let mut all_days: Vec<i32> = Vec::new();
             let mut all_payloads: Vec<Vec<u8>> = Vec::new();
 
             // read 10_000 rows in the memory vector to create the parquet group
@@ -170,12 +180,72 @@ impl History {
                     let tbytes = timestamp;
                     all_timestamps.push(tbytes);
 
+                    // year, month, day
+                    let naive = chrono::NaiveDateTime::from_timestamp_opt(timestamp / 1_000_000, 0)
+                        .unwrap();
+                    let date = naive.date();
+                    let year: i32 = date.year();
+                    all_year.push(year);
+                    let month: i32 = date.month().try_into().unwrap();
+                    all_month.push(month);
+
+                    let day: i32 = date.day().try_into().unwrap();
+                    all_days.push(day);
+
                     cpt += 1;
                     if cpt % 10_000 == 0 {
                         debug!("{} elements exported", cpt);
                     }
                     row = it.next();
                 }
+            }
+
+            if let Some(mut col_writer) = row_group_writer.next_column().unwrap() {
+                col_writer
+                    .typed::<Int32Type>()
+                    .write_batch(
+                        &all_days,
+                        None,
+                        None, // Some(&[3, 3, 3, 2, 2]),
+                              //Some(&[0, 1, 0, 1, 1]),
+                    )
+                    .expect("error in writing columns");
+
+                col_writer.close().unwrap();
+            } else {
+                return Err(Box::new(HistoryError {}));
+            }
+
+            if let Some(mut col_writer) = row_group_writer.next_column().unwrap() {
+                col_writer
+                    .typed::<Int32Type>()
+                    .write_batch(
+                        &all_month,
+                        None,
+                        None, // Some(&[3, 3, 3, 2, 2]),
+                              //Some(&[0, 1, 0, 1, 1]),
+                    )
+                    .expect("error in writing columns");
+
+                col_writer.close().unwrap();
+            } else {
+                return Err(Box::new(HistoryError {}));
+            }
+
+            if let Some(mut col_writer) = row_group_writer.next_column().unwrap() {
+                col_writer
+                    .typed::<Int32Type>()
+                    .write_batch(
+                        &all_year,
+                        None,
+                        None, // Some(&[3, 3, 3, 2, 2]),
+                              //Some(&[0, 1, 0, 1, 1]),
+                    )
+                    .expect("error in writing columns");
+
+                col_writer.close().unwrap();
+            } else {
+                return Err(Box::new(HistoryError {}));
             }
 
             // write the rows in the parquet file
@@ -247,7 +317,7 @@ impl History {
 
         if delete_values {
             if let Some(last_timestamp) = last {
-                for (k, v) in self.database.iter(&ReadOptions::new()) {
+                for (k, _v) in self.database.iter(&ReadOptions::new()) {
                     let key_value = i64::from_u8(&k);
 
                     if let Err(e) = self.database.delete(&WriteOptions::new(), &key_value) {
