@@ -50,7 +50,7 @@ use std::{
         Arc,
         atomic::{AtomicBool, Ordering},
         Mutex,
-    },
+    }, convert::TryFrom,
 };
 use tokio::{
     io::{
@@ -72,7 +72,7 @@ use tokio::{
     },
 };
 #[cfg(feature = "tls")]
-use tokio_rustls::{self, webpki::DNSNameRef, TlsConnector};
+use tokio_rustls::{self, TlsConnector};
 use url::Url;
 
 /// An MQTT client.
@@ -550,7 +550,7 @@ async fn connect_stream(opts: &ClientOptions) -> Result<AsyncStream> {
         ConnectionMode::Tls(ref c) => {
             let port = opts.url.port().unwrap_or(8883);
             let connector = TlsConnector::from(c.clone());
-            let domain = DNSNameRef::try_from_ascii_str(host)
+            let domain = tokio_rustls::rustls::ServerName::try_from(host)
                 .map_err(|e| Error::from_std_err(e))?;
             let tcp = TcpStream::connect((host, port)).await?;
             let conn = connector.connect(domain, tcp).await?;

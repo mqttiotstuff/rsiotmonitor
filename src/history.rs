@@ -121,6 +121,7 @@ impl History {
         output_file: &str,
         delete_values: bool,
     ) -> Result<(), Box<dyn Error>> {
+        
         let path = Path::new(output_file);
 
         let record_type = "

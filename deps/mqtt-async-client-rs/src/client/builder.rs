@@ -11,6 +11,7 @@ use crate::{
     }
 };
 
+use rustls::RootCertStore;
 use url::Url;
 
 #[cfg(any(feature = "tls", feature = "websocket"))]
@@ -88,7 +89,10 @@ impl ClientBuilder {
             ConnectionMode::Tls(config) => config.clone(),
             #[cfg(feature = "websocket")]
             ConnectionMode::WebsocketSecure(config) => config.clone(),
-            _ => Arc::new(rustls::ClientConfig::new()),
+            _ => {
+                let root_store = RootCertStore::empty();
+                Arc::new(rustls::ClientConfig::builder().with_safe_defaults().with_root_certificates(root_store).with_no_client_auth())
+            },
         };
         self.connection_mode = match url.scheme() {
             "mqtt" => ConnectionMode::Tcp,

@@ -544,7 +544,7 @@ async fn tcp_server_loop(
     broker_tx: tokio::sync::mpsc::Sender<BrokerMessage>,
     bind_options: String,
 ) -> io::Result<()> {
-    info!("Listening on {}", bind_options);
+    info!("MQTTServer Listening on {}", bind_options);
 
     let listener = TcpListener::bind(bind_options).await?;
 
@@ -561,7 +561,7 @@ const WEBSOCKET_TCP_LISTENER_ADDR: &str = "0.0.0.0:8088";
 async fn websocket_server_loop(
     broker_tx: tokio::sync::mpsc::Sender<BrokerMessage>,
 ) -> io::Result<()> {
-    info!("Listening on {}", WEBSOCKET_TCP_LISTENER_ADDR);
+    info!("MQTTServer Listening on {} for websocket", WEBSOCKET_TCP_LISTENER_ADDR);
 
     let listener = TcpListener::bind(WEBSOCKET_TCP_LISTENER_ADDR).await?;
 
@@ -606,7 +606,7 @@ async fn main() {
     let opt = Opt::from_args();
 
     if opt.embedded_mqtt {
-        info!("starting embedded mqtt {}", opt.embedded_mqtt_bind_options);
+        info!("Starting embedded mqtt {}", opt.embedded_mqtt_bind_options);
         let cloned_opt = opt.clone();
 
         let _broker_spawn = tokio::spawn(async move {
@@ -617,7 +617,7 @@ async fn main() {
 
     let config = crate::config::read_configuration().await.unwrap();
 
-    debug!("starting with config : {:?}\n", &config);
+    debug!("Starting with config : {:?}\n", &config);
 
     let _http_server = tokio::task::spawn(async move {
         httpserver::server_start(([0,0,0,0],3000)).await;
