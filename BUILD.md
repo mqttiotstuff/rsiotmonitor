@@ -15,6 +15,8 @@ This build needs a root or the target image, inside the rscross docker
 
 	docker run --rm -ti -v `pwd`:/code rscross bash -c "cargo build -target=armv7-unknown-linux-gnueabihf"
 
+	docker run --rm -ti -v `pwd`:/code rscross bash -c "cargo build -target=x86_64-unknown-linux-gnu"
+
 
 
 ## x64 build with older glibc release

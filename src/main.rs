@@ -23,12 +23,7 @@ use structopt::StructOpt;
 use tokio::{net::TcpListener, time::Duration};
 
 use rsiotmonitor::{process::ProcessIterator, *};
-use std::{
-    io,
-    path::{PathBuf},
-    sync::Arc,
-    time::SystemTime,
-};
+use std::{error::Error as RustError, io, path::PathBuf, sync::Arc, time::SystemTime};
 use tokio_cron_scheduler::{Job, JobScheduler};
 
 use crate::mqtt_utils::*;
@@ -285,55 +280,57 @@ fn wrap_already_exists_processes(config: IOTMonitor) -> IOTMonitor {
     c
 }
 
-use chrono::{offset::Utc, Days, Datelike};
 use chrono::DateTime;
+use chrono::{offset::Utc, Datelike, Days};
 
 /// start method
 #[allow(unreachable_code)]
-async fn start(config: IOTMonitor) -> mqtt_async_client::Result<()> {
+async fn start(config: IOTMonitor) -> Result<(), Box<dyn RustError>> {
     // set scheduling
 
     if let Some(hist) = config.history.clone() {
+        let sched = JobScheduler::new().await?;
 
-        let sched = JobScheduler::new().await.unwrap();
+        // every days at 00:00Z
+        let job = Job::new_async("0 0 0 1-31 * *", move |_uuid, _l| {
+            let local_hist = hist.clone();
+            Box::pin(async move {
+                let triggered_date = chrono::Utc::now();
+                let previous_day = triggered_date - Days::new(1);
 
-        sched
-            .add(
-                // every days at 00:00Z
-                Job::new_async("0 0 0 1-31 * *", move |_uuid, _l| {
-                    let local_hist = hist.clone();
-                    Box::pin(async move {
+                let date = previous_day.date_naive();
+                let year = date.year();
+                let month = date.month();
+                let day = date.day();
 
-                        let triggered_date = chrono::Utc::now();
-                        let previous_day = triggered_date - Days::new(1); 
+                let partitionned_dir_name =
+                    format!("history_archive/year={}/month={}/day={}", year, month, day);
 
-                        let date = previous_day.date_naive();
-                        let year = date.year();
-                        let month = date.month();
-                        let day = date.day();
+                if let Err(e) = std::fs::create_dir_all(PathBuf::from(&partitionned_dir_name)) {
+                    error!("cannot create history_archive : {}", e);
+                }
 
-                        let partitionned_dir_name = format!("history_archive/year={}/month={}/day={}", year, month, day);
+                let filename: String = previous_day
+                    .format(&(partitionned_dir_name + "/events_%Y-%m-%d-%s.parquet"))
+                    .to_string();
 
-                        if let Err(e) = std::fs::create_dir_all(PathBuf::from(&partitionned_dir_name)) {
-                            error!("cannot create hitory_archive : {}", e);
-                        }
+                info!("writing parquet segment {}", &filename);
+                if let Err(e) = local_hist.export_to_parquet(
+                    &filename,
+                    Some((
+                        previous_day.timestamp_micros(),
+                        triggered_date.timestamp_micros(),
+                    )),
+                    true,
+                ) {
+                    error!("Error while exporting to parquet {}", e);
+                }
+            })
+        })
+        .expect("error in scheduling job");
 
-                        let filename: String = Utc::now()
-                            .format(&(partitionned_dir_name + "/events_%Y-%m-%d-%s.parquet"))
-                            .to_string();
-
-                        info!("writing parquet segment {}", &filename);
-                        if let Err(e) = local_hist.export_to_parquet(&filename, true) {
-                            error!("Error while exporting to parquet {}", e);
-                        }
-
-                    })
-                })
-                .unwrap(),
-            )
-            .await
-            .unwrap();
-        sched.start().await.unwrap();
+        sched.add(job).await?;
+        sched.start().await?;
     }
 
     // search for existing processes, and wrap their declaration
@@ -346,73 +343,97 @@ async fn start(config: IOTMonitor) -> mqtt_async_client::Result<()> {
 
     let config_mqtt = populated_config.mqtt_config.clone();
 
-    let mut client = match client_from_args(&config_mqtt) {
+    let mut main_client_connection = match client_from_args(&config_mqtt) {
         Ok(client) => client,
         Err(e) => panic!("{}", e),
     };
 
     info!("opening state storage");
-    populated_config.state_connection = Some(Arc::new(state::init().unwrap()));
+    populated_config.state_connection = Some(Arc::new(state::init()?));
 
     let mut config_mqtt_watchdog = populated_config.mqtt_config.clone();
 
     let rw: tokio::sync::RwLock<IOTMonitor> = tokio::sync::RwLock::new(populated_config);
     let config_ref = Arc::new(rw);
 
+    let mut history_handle: Option<tokio::task::JoinHandle<()>> = None;
+
+    //////////////////////////////////////////////////////////////////////////////////// history
+
+    if history_handle.is_none() {
+        if let Some(histo_topic_string) = histo_topic.clone() {
+            debug!("there is an history configuration, launch the history functions");
+            // prepare history run
+            let mut config_ref_history = config_mqtt_watchdog.clone();
+
+            assert!(&config_mqtt_watchdog.client_id.is_some());
+            config_ref_history.client_id =
+                Some(config_mqtt_watchdog.client_id.clone().unwrap() + "_history");
+            let history_config_ref = config_ref.clone();
+
+            history_handle = Some(tokio::spawn(async move {
+                debug!("launch history");
+
+                let mut history_subscription_client = match client_from_args(&config_ref_history) {
+                    Ok(client) => client,
+                    Err(e) => {
+                        error!("error in connecting to mqtt broker : {}", e);
+                        return;
+                    } // cannot connect twice
+                };
+
+                loop {
+                    if history_subscription_client.connect().await.is_ok() {
+                        debug!("connected");
+
+                        if let Err(e) = history_and_run(
+                            histo_topic_string.clone(),
+                            &history_config_ref,
+                            &mut history_subscription_client,
+                        )
+                        .await
+                        {
+                            error!("error from subscribe history, {}", e);
+                            // try reconnecting
+                            // break;
+                            let _r = history_subscription_client.disconnect().await;
+                        };
+                    }
+                    wait_2s().await; // ignore the result
+                }
+            }));
+        }
+    }
+
     // main loop, reconnect
     loop {
-        let conn_result = client.connect().await;
+        let conn_result = main_client_connection.connect().await;
+
         if let Ok(ok_result) = conn_result {
             info!("connected : {:?}\n", ok_result);
 
             if let Some(clientid) = config_mqtt_watchdog.client_id {
                 config_mqtt_watchdog.client_id = Some(clientid.clone() + "_outbounds");
-                let mut client2 = match client_from_args(&config_mqtt_watchdog) {
+                let mut watch_dog_client = match client_from_args(&config_mqtt_watchdog) {
                     Ok(client) => client,
                     Err(e) => panic!("{}", e), // cannot connect twice
                 };
 
                 let config_ref_check = config_ref.clone();
                 // we must test the main connexion first
-                client2.connect().await.unwrap();
+
+                watch_dog_client
+                    .connect()
+                    .await
+                    .expect("fail to connect to mqtt for watchdog purpose");
+
                 debug!("connected");
-
-                if let Some(histo_topic_string) = histo_topic.clone() {
-                    // prepare history run
-                    let mut config_ref_history = config_mqtt_watchdog.clone();
-                    config_ref_history.client_id = Some(clientid + "_history");
-                    let history_config_ref = config_ref.clone();
-
-                    tokio::spawn(async move {
-                        debug!("launch history");
-
-                        let mut client2 = match client_from_args(&config_ref_history) {
-                            Ok(client) => client,
-                            Err(e) => {
-                                error!("error in connecting to mqtt broker : {}", e);
-                                panic!("{}", e)
-                            } // cannot connect twice
-                        };
-                        client2.connect().await.unwrap();
-                        debug!("connected");
-
-                        if let Err(e) =
-                            history_and_run(histo_topic_string, &history_config_ref, &mut client2)
-                                .await
-                        {
-                            error!("error from subscribe history, {}", e);
-                            // try reconnecting
-                            // break;
-                            let _r = client2.disconnect().await;
-                        };
-                    });
-                }
 
                 let l_base_topic = base_topic.clone();
 
                 tokio::spawn(async move {
                     debug!("start watchdog");
-                    let mut cnx_mqtt = client2;
+                    let mut cnx_mqtt = watch_dog_client;
 
                     loop {
                         // each check epoch
@@ -429,7 +450,7 @@ async fn start(config: IOTMonitor) -> mqtt_async_client::Result<()> {
 
                         if let Err(e) = cnx_mqtt.publish(&p).await {
                             warn!("error in publishing the health check : {}", e);
-                            break;
+                            break; // end of the history process
                         }
 
                         let mut expired: Vec<String> = vec![];
@@ -453,7 +474,10 @@ async fn start(config: IOTMonitor) -> mqtt_async_client::Result<()> {
                                     }
 
                                     debug!("launching process {}", &additional_infos.exec);
-                                    process::run_process_with_fork(name, additional_infos).unwrap();
+                                    let process_launch_result = process::run_process_with_fork(name, additional_infos);
+                                    if let Err(processerr) = process_launch_result {
+                                        warn!("error launching process: {:?}", processerr);
+                                    }
                                     additional_infos.restarted_count += 1;
                                 }
 
@@ -491,28 +515,34 @@ async fn start(config: IOTMonitor) -> mqtt_async_client::Result<()> {
                         }
 
                         let _r = wait_2s().await;
-                    }
+                    } // loop
 
                     let _r = cnx_mqtt.disconnect().await;
                 });
 
-                if let Err(e) = subscribe_and_run(&config_ref, &mut client).await {
+                // this is blocking
+                if let Err(e) = subscribe_and_run(&config_ref, &mut main_client_connection).await {
                     error!("error from subscribe and run, {}", e);
                     // try reconnecting
-                    let _r = client.disconnect().await;
+                    let _r = main_client_connection.disconnect().await;
                 }
+
+                // we continue if the connection is lost
             } else {
                 info!("no client id");
-                let disconnect_result = client.disconnect().await;
+                let disconnect_result = main_client_connection.disconnect().await;
                 if let Err(e) = disconnect_result {
                     warn!("error in disconnecting : {} , continue", e);
                 }
             }
         } else {
+            // main connection failed
             error!("error in connection : {:?}\n", conn_result);
         }
+
         // wait 1s before retry to reconnect
-        let _r = wait_2s().await;
+        #[allow(unused_must_use)]
+        wait_2s().await;
     } // loop to reconnect
 
     Ok(())
@@ -561,7 +591,10 @@ const WEBSOCKET_TCP_LISTENER_ADDR: &str = "0.0.0.0:8088";
 async fn websocket_server_loop(
     broker_tx: tokio::sync::mpsc::Sender<BrokerMessage>,
 ) -> io::Result<()> {
-    info!("MQTTServer Listening on {} for websocket", WEBSOCKET_TCP_LISTENER_ADDR);
+    info!(
+        "MQTTServer Listening on {} for websocket",
+        WEBSOCKET_TCP_LISTENER_ADDR
+    );
 
     let listener = TcpListener::bind(WEBSOCKET_TCP_LISTENER_ADDR).await?;
 
@@ -620,7 +653,7 @@ async fn main() {
     debug!("Starting with config : {:?}\n", &config);
 
     let _http_server = tokio::task::spawn(async move {
-        httpserver::server_start(([0,0,0,0],3000)).await;
+        httpserver::server_start(([0, 0, 0, 0], 3000)).await;
     });
 
     start(config).await.unwrap();

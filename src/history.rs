@@ -10,7 +10,7 @@ use leveldb::options::{Options, ReadOptions, WriteOptions};
 
 #[allow(unused_imports)]
 use log::{debug, error, info, trace, warn};
-use parquet::data_type::{ByteArray, ByteArrayType, Int64Type, Int32Type};
+use parquet::data_type::{ByteArray, ByteArrayType, Int32Type, Int64Type};
 use parquet::file::properties::WriterProperties;
 use parquet::file::writer::SerializedFileWriter;
 use parquet::schema::parser::parse_message_type;
@@ -119,9 +119,9 @@ impl History {
     pub fn export_to_parquet(
         &self,
         output_file: &str,
+        date_range: Option<(i64, i64)>,
         delete_values: bool,
     ) -> Result<(), Box<dyn Error>> {
-        
         let path = Path::new(output_file);
 
         let record_type = "
@@ -169,34 +169,41 @@ impl History {
             while row.is_some() && cpt % 10_000 != 0 {
                 if let Some(a) = row.as_ref() {
                     let timestamp = i64::from_u8(&a.0);
-                    last = Some(timestamp);
-                    let tp = TopicPayload::from_u8(&a.1);
-                    let topic = tp.topic;
-                    let payload = tp.payload;
 
-                    all_topics.push(topic);
-                    let b = payload.to_vec();
-                    all_payloads.push(b);
+                    if date_range.is_none()
+                        || (timestamp >= date_range.unwrap().0 && timestamp < date_range.unwrap().1)
+                    {
+                        last = Some(timestamp);
+                        let tp = TopicPayload::from_u8(&a.1);
+                        let topic = tp.topic;
+                        let payload = tp.payload;
 
-                    let tbytes = timestamp;
-                    all_timestamps.push(tbytes);
+                        all_topics.push(topic);
+                        let b = payload.to_vec();
+                        all_payloads.push(b);
 
-                    // year, month, day
-                    let naive = chrono::NaiveDateTime::from_timestamp_opt(timestamp / 1_000_000, 0)
-                        .unwrap();
-                    let date = naive.date();
-                    let year: i32 = date.year();
-                    all_year.push(year);
-                    let month: i32 = date.month().try_into().unwrap();
-                    all_month.push(month);
+                        let tbytes = timestamp;
+                        all_timestamps.push(tbytes);
 
-                    let day: i32 = date.day().try_into().unwrap();
-                    all_days.push(day);
+                        // year, month, day
+                        let naive =
+                            chrono::NaiveDateTime::from_timestamp_opt(timestamp / 1_000_000, 0)
+                                .unwrap();
+                        let date = naive.date();
+                        let year: i32 = date.year();
+                        all_year.push(year);
+                        let month: i32 = date.month().try_into().unwrap();
+                        all_month.push(month);
 
-                    cpt += 1;
-                    if cpt % 10_000 == 0 {
-                        debug!("{} elements exported", cpt);
+                        let day: i32 = date.day().try_into().unwrap();
+                        all_days.push(day);
+
+                        cpt += 1;
+                        if cpt % 10_000 == 0 {
+                            debug!("{} elements exported", cpt);
+                        }
                     }
+
                     row = it.next();
                 }
             }
@@ -205,10 +212,9 @@ impl History {
                 col_writer
                     .typed::<Int32Type>()
                     .write_batch(
-                        &all_days,
-                        None,
+                        &all_days, None,
                         None, // Some(&[3, 3, 3, 2, 2]),
-                              //Some(&[0, 1, 0, 1, 1]),
+                             //Some(&[0, 1, 0, 1, 1]),
                     )
                     .expect("error in writing columns");
 
@@ -221,10 +227,9 @@ impl History {
                 col_writer
                     .typed::<Int32Type>()
                     .write_batch(
-                        &all_month,
-                        None,
+                        &all_month, None,
                         None, // Some(&[3, 3, 3, 2, 2]),
-                              //Some(&[0, 1, 0, 1, 1]),
+                             //Some(&[0, 1, 0, 1, 1]),
                     )
                     .expect("error in writing columns");
 
@@ -237,10 +242,9 @@ impl History {
                 col_writer
                     .typed::<Int32Type>()
                     .write_batch(
-                        &all_year,
-                        None,
+                        &all_year, None,
                         None, // Some(&[3, 3, 3, 2, 2]),
-                              //Some(&[0, 1, 0, 1, 1]),
+                             //Some(&[0, 1, 0, 1, 1]),
                     )
                     .expect("error in writing columns");
 
@@ -321,11 +325,15 @@ impl History {
                 for (k, _v) in self.database.iter(&ReadOptions::new()) {
                     let key_value = i64::from_u8(&k);
 
-                    if let Err(e) = self.database.delete(&WriteOptions::new(), &key_value) {
-                        warn!("error while deleting the value : {}", e);
-                    }
-                    if key_value == last_timestamp {
-                        break;
+                    if date_range.is_none()
+                        || (key_value >= date_range.unwrap().0 && key_value < date_range.unwrap().1)
+                    {
+                        if let Err(e) = self.database.delete(&WriteOptions::new(), &key_value) {
+                            warn!("error while deleting the value : {}", e);
+                        }
+                        if key_value == last_timestamp {
+                            break;
+                        }
                     }
                 }
             }
@@ -380,7 +388,7 @@ pub fn test_storage_timestamp() {
         }
     }
 
-    h.export_to_parquet("final.parquet", true);
+    h.export_to_parquet("final.parquet", None, true);
 }
 
 #[test]
@@ -394,7 +402,7 @@ pub fn test_export() {
         h.store_event("a4".into(), "b".as_bytes()).unwrap();
     }
     // export to parquet
-    h.export_to_parquet("test.parquet", true).unwrap();
+    h.export_to_parquet("test.parquet", None, true).unwrap();
 
     // no more elements
     assert!(h.database.iter(&ReadOptions::new()).next().is_none());
@@ -405,5 +413,5 @@ pub fn export() {
     let h = History::init().unwrap();
 
     // export to parquet
-    h.export_to_parquet("h.parquet", false).unwrap();
+    h.export_to_parquet("h.parquet", None, false).unwrap();
 }

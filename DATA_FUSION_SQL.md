@@ -14,7 +14,7 @@ copy (select timestamp, topic, payload, arrow_cast(date_part('day',arrow_cast(ti
 ### datashared:
 
 
-create external table mqtt_hive(year int,month int, day int, timestamp bigint, topic bytea, payload bytea) stored as parquet partitioned by (year,month,day)  location 'hive'
+create external table mqtt_hive(year int,month int, day int, timestamp bigint, topic bytea, payload bytea) stored as parquet partitioned by (year,month,day)  location 'history_archive';
 
 
 
