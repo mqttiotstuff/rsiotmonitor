@@ -46,7 +46,7 @@ db-key = "0.0.5"
 
 mlua = { version = "0.9.1", features = ["lua54", "vendored"] }
 
-parquet="46.0.0"
+parquet="47.0.0"
 
 tokio-cron-scheduler = "0.9.4"
 

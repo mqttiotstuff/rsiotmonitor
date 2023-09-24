@@ -131,10 +131,10 @@ pub async fn read_configuration() -> mqtt_async_client::Result<IOTMonitor> {
     let hash: HashMap<String, Box<MonitoringInfo>> =
         HashMap::from_iter(devices.into_iter().map(|e| (e.name.clone(), e)));
 
-    let mut opt_history: Option<Arc<Box<History>>> = None;
+    let mut opt_history: Option<Arc<History>> = None;
     if let Some(_topics_history) = history_topic.clone() {
         info!("history initialization");
-        opt_history = Some(Arc::new(History::init().unwrap()));
+        opt_history = Some(History::init().unwrap());
     }
 
     let iotmonitor = IOTMonitor::new(mqtt_config, hash, history_topic, opt_history);

@@ -32,7 +32,7 @@ pub struct IOTMonitor {
     pub history_topic: Option<String>,
 
     #[derivative(Debug = "ignore")]
-    pub history: Option<Arc<Box<History>>>,
+    pub history: Option<Arc<History>>,
 
     #[derivative(Debug = "ignore")]
     pub state_connection: Option<Arc<sqlite::ConnectionWithFullMutex>>,
@@ -47,7 +47,7 @@ impl IOTMonitor {
         mqtt_config: crate::config::MqttConfig,
         monitored_devices: HashMap<String, Box<MonitoringInfo>>,
         history_topic: Option<String>,
-        history: Option<Arc<Box<History>>>,
+        history: Option<Arc<History>>,
     ) -> Self {
         // return the IOTMonitor structure
         IOTMonitor {

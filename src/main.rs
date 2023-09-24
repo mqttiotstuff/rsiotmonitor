@@ -22,7 +22,7 @@ use structopt::StructOpt;
 
 use tokio::{net::TcpListener, time::Duration};
 
-use rsiotmonitor::{process::ProcessIterator, *};
+use rsiotmonitor::{history::History, process::ProcessIterator, *};
 use std::{error::Error as RustError, io, path::PathBuf, sync::Arc, time::SystemTime};
 use tokio_cron_scheduler::{Job, JobScheduler};
 
@@ -283,6 +283,45 @@ fn wrap_already_exists_processes(config: IOTMonitor) -> IOTMonitor {
 use chrono::DateTime;
 use chrono::{offset::Utc, Datelike, Days};
 
+fn export_history_day_from_datetime(
+    hist_database: Arc<History>,
+    triggered_date: DateTime<Utc>,
+) -> Result<(), Box<dyn RustError>> {
+    let previous_day = triggered_date - Days::new(1);
+
+    let date = previous_day.date_naive();
+    let year = date.year();
+    let month = date.month();
+    let day = date.day();
+
+    let partitionned_dir_name =
+        format!("history_archive/year={}/month={}/day={}", year, month, day);
+
+    if let Err(e) = std::fs::create_dir_all(PathBuf::from(&partitionned_dir_name)) {
+        error!("cannot create history_archive : {}", e);
+        return Err(Box::new(e));
+    }
+
+    let filename: String = previous_day
+        .format(&(partitionned_dir_name + "/events_%Y-%m-%d-%s.parquet"))
+        .to_string();
+
+    info!("writing parquet segment {}", &filename);
+    if let Err(e) = hist_database.export_to_parquet(
+        &filename,
+        Some((
+            previous_day.timestamp_micros(),
+            triggered_date.timestamp_micros(),
+        )),
+        true,
+    ) {
+        error!("Error while exporting to parquet {}", e);
+        return Err(e);
+    }
+
+    Ok(())
+}
+
 /// start method
 #[allow(unreachable_code)]
 async fn start(config: IOTMonitor) -> Result<(), Box<dyn RustError>> {
@@ -296,34 +335,8 @@ async fn start(config: IOTMonitor) -> Result<(), Box<dyn RustError>> {
             let local_hist = hist.clone();
             Box::pin(async move {
                 let triggered_date = chrono::Utc::now();
-                let previous_day = triggered_date - Days::new(1);
-
-                let date = previous_day.date_naive();
-                let year = date.year();
-                let month = date.month();
-                let day = date.day();
-
-                let partitionned_dir_name =
-                    format!("history_archive/year={}/month={}/day={}", year, month, day);
-
-                if let Err(e) = std::fs::create_dir_all(PathBuf::from(&partitionned_dir_name)) {
-                    error!("cannot create history_archive : {}", e);
-                }
-
-                let filename: String = previous_day
-                    .format(&(partitionned_dir_name + "/events_%Y-%m-%d-%s.parquet"))
-                    .to_string();
-
-                info!("writing parquet segment {}", &filename);
-                if let Err(e) = local_hist.export_to_parquet(
-                    &filename,
-                    Some((
-                        previous_day.timestamp_micros(),
-                        triggered_date.timestamp_micros(),
-                    )),
-                    true,
-                ) {
-                    error!("Error while exporting to parquet {}", e);
+                if let Err(e) = export_history_day_from_datetime(local_hist, triggered_date) {
+                    error!("{}", e);
                 }
             })
         })
@@ -570,6 +583,12 @@ struct Opt {
 
     #[structopt(long)]
     enable: Option<String>,
+
+    #[structopt(long)]
+    command_archive_history_date: Option<String>,
+
+    #[structopt(long)]
+    command_create_snapshot: Option<String>,
 }
 
 async fn tcp_server_loop(
@@ -639,6 +658,42 @@ async fn main() {
     env_logger::init();
 
     let opt = Opt::from_args();
+
+    // handling commands
+    if let Some(export_history_to_parse) = &opt.command_archive_history_date {
+        println!(
+            "handling history export on date : {}",
+            export_history_to_parse
+        );
+
+        let config = crate::config::read_configuration().await.unwrap();
+        if let Some(history) = config.history {
+            let day: DateTime<Utc> = DateTime::parse_from_rfc3339(export_history_to_parse)
+                .expect("error while parsing the date, date must be passed as iso860, eg: 2023-09-17T00:00:00Z")
+                .into();
+            export_history_day_from_datetime(history, day).unwrap();
+
+            println!("export done");
+            return;
+        } else {
+            panic!("no history configured, cannot export history on date");
+        }
+    }
+
+    if let Some(export_snapshot) = &opt.command_create_snapshot {
+        let config = crate::config::read_configuration().await.unwrap();
+
+        if let Some(history) = config.history {
+            if let Err(e) = history.export_to_parquet(export_snapshot, None, false) {
+                error!("Error while exporting to parquet {}", e);
+                panic!("error while exporting : {:?}", e);
+            }
+            println!("snapshot done");
+            return;
+        } else {
+            panic!("no history configured, cannot create snapshot");
+        }
+    }
 
     if opt.embedded_mqtt {
         info!("Starting embedded mqtt {}", opt.embedded_mqtt_bind_options);

@@ -4,6 +4,7 @@ use std::time::SystemTime;
 use std::{fmt, fs, u128};
 
 use chrono::Datelike;
+use leveldb::compaction::Compaction;
 use leveldb::database::Database;
 use leveldb::iterator::Iterable;
 use leveldb::options::{Options, ReadOptions, WriteOptions};
@@ -61,25 +62,33 @@ impl fmt::Display for HistoryError {
 impl Error for HistoryError {}
 
 pub struct History {
-    database: Box<Database>,
+    database: Arc<Database>,
 }
 
 impl History {
     /// init the history, and open the archive database
-    pub fn init() -> Result<Box<History>, Box<dyn Error>> {
+    pub fn init() -> Result<Arc<History>, Box<dyn Error>> {
         let path = Path::new("history");
 
         let mut options = Options::new();
         options.create_if_missing = true;
+
+        if let Err(e) = leveldb::management::repair(path, &options) {
+            warn!("error encountered for repair : {:?}", e);
+            warn!("the repair action is not successfull, or database does not exists, continue");
+        };
+
         let database = match Database::open(path, &options) {
             Ok(db) => db,
             Err(e) => {
                 panic!("failed to open database: {:?}", e);
             }
         };
+        println!("database compaction");
+        database.compact(&[], &[255, 255, 255, 255, 255, 255, 255, 255, 255]);
 
-        Ok(Box::new(History {
-            database: Box::new(database),
+        Ok(Arc::new(History {
+            database: Arc::new(database),
         }))
     }
 
@@ -409,6 +418,25 @@ pub fn test_export() -> Result<(), Box<dyn Error>> {
 
     // no more elements
     assert!(h.database.iter(&ReadOptions::new()).next().is_none());
+    Ok(())
+}
+
+#[test]
+pub fn test_export_with_range() -> Result<(), Box<dyn Error>> {
+    let h = History::init()?;
+    for _i in 0..100_000 {
+        h.store_event_with_timestamp(0, "a".into(), "b".as_bytes())?;
+        h.store_event_with_timestamp(1, "a1".into(), "b".as_bytes())?;
+        h.store_event_with_timestamp(2, "a2".into(), "b".as_bytes())?;
+        h.store_event_with_timestamp(3, "a3".into(), "b".as_bytes())?;
+        h.store_event_with_timestamp(4, "a4".into(), "b".as_bytes())?;
+    }
+    // export to parquet
+    h.export_to_parquet("test.parquet", Some((0, 2)), true)?;
+
+    // no more elements
+    // assert!(h.database.iter(&ReadOptions::new()).next().is_none());
+
     Ok(())
 }
 
