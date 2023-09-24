@@ -1,21 +1,17 @@
 #[allow(unused_imports)]
 use log::{debug, error, info, trace, warn};
-use mqtt_async_client::{
-    client::{Client, KeepAlive, QoS},
-    Error,
-};
-use rustls::{ClientConfig, RootCertStore, OwnedTrustAnchor};
-use std::{fs::File, io::BufReader, time::Duration, borrow::BorrowMut};
+use mqtt_async_client::client::{Client, KeepAlive, QoS};
+use rustls::{ClientConfig, OwnedTrustAnchor, RootCertStore};
+use std::{fs::File, io::BufReader, time::Duration};
 
-#[cfg(feature = "tls")]
-use std::io::Cursor;
+// #[cfg(feature = "tls")]
+// use std::io::Cursor;
 
 #[cfg(feature = "tls")]
 use rustls;
 
 #[cfg(feature = "tls")]
 use webpki_roots;
-
 
 use crate::config::MqttConfig;
 
@@ -34,7 +30,6 @@ pub fn client_from_args(args: &MqttConfig) -> mqtt_async_client::Result<Client> 
 
     #[cfg(feature = "tls")]
     {
-
         let cc = if let Some(s) = &args.tls_server_ca_file {
             let mut root_store = RootCertStore::empty();
             let certfile = File::open(s).expect("Cannot open CA file");
@@ -44,28 +39,23 @@ pub fn client_from_args(args: &MqttConfig) -> mqtt_async_client::Result<Client> 
                 &rustls_pemfile::certs(&mut reader).expect("cannot read the certificate"),
             );
 
-            let mut cc = ClientConfig::builder()
+            let cc = ClientConfig::builder()
                 .with_safe_defaults()
                 .with_root_certificates(root_store)
                 .with_no_client_auth();
 
             Some(cc)
-
         } else if args.tls_mozilla_root_cas {
             let mut root_store = RootCertStore::empty();
-            root_store.add_trust_anchors(
-                webpki_roots::TLS_SERVER_ROOTS
-                    .iter()
-                    .map(|ta| {
-                        OwnedTrustAnchor::from_subject_spki_name_constraints(
-                            ta.subject,
-                            ta.spki,
-                            ta.name_constraints,
-                        )
-                    }),
-            );
+            root_store.add_trust_anchors(webpki_roots::TLS_SERVER_ROOTS.iter().map(|ta| {
+                OwnedTrustAnchor::from_subject_spki_name_constraints(
+                    ta.subject,
+                    ta.spki,
+                    ta.name_constraints,
+                )
+            }));
 
-            let mut cc = rustls::ClientConfig::builder()
+            let cc = rustls::ClientConfig::builder()
                 .with_safe_defaults()
                 .with_root_certificates(root_store)
                 .with_no_client_auth();
@@ -104,7 +94,6 @@ pub fn client_from_args(args: &MqttConfig) -> mqtt_async_client::Result<Client> 
         if let Some(c) = cc {
             b.set_tls_client_config(c);
         }
-
     }
 
     b.build()
@@ -138,22 +127,16 @@ pub fn does_topic_match(tested_topic: &String, evaluated_topic: &String) -> bool
 /// Test does_topic_match function
 #[test]
 fn test_does_topic_match() {
-    assert_eq!(
-        does_topic_match(&"home".to_string(), &"home/toto".to_string()),
-        false
-    );
-    assert_eq!(
-        does_topic_match(&"home/#".to_string(), &"home/toto".to_string()),
-        true
-    );
-    assert_eq!(
-        does_topic_match(&"toto".to_string(), &"tutu".to_string()),
-        false
-    );
+    assert!(!does_topic_match(
+        &"home".to_string(),
+        &"home/toto".to_string()
+    ));
+    assert!(does_topic_match(
+        &"home/#".to_string(),
+        &"home/toto".to_string()
+    ));
+    assert!(!does_topic_match(&"toto".to_string(), &"tutu".to_string()));
 
-    assert_eq!(does_topic_match(&"".to_string(), &"tutu".to_string()), true);
-    assert_eq!(
-        does_topic_match(&"#".to_string(), &"tutu".to_string()),
-        true
-    );
+    assert!(does_topic_match(&"".to_string(), &"tutu".to_string()));
+    assert!(does_topic_match(&"#".to_string(), &"tutu".to_string()));
 }

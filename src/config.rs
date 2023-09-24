@@ -10,7 +10,6 @@ use std::time::Duration;
 
 use std::iter::FromIterator;
 
-
 /// Mqtt connection properties and configuration
 #[derive(Debug, Clone)]
 pub struct MqttConfig {
@@ -110,7 +109,7 @@ pub async fn read_configuration() -> mqtt_async_client::Result<IOTMonitor> {
 
                 let mut monitor_info = MonitoringInfo::create(name);
 
-                crate::config::update_monitorinfo_from_config_table(&mut monitor_info, &table);
+                crate::config::update_monitorinfo_from_config_table(&mut monitor_info, table);
 
                 // only agent have process informations
                 if isagent {
@@ -138,10 +137,7 @@ pub async fn read_configuration() -> mqtt_async_client::Result<IOTMonitor> {
         opt_history = Some(Arc::new(History::init().unwrap()));
     }
 
-
-
-    let iotmonitor = IOTMonitor::new(mqtt_config, 
-        hash, history_topic, opt_history);
+    let iotmonitor = IOTMonitor::new(mqtt_config, hash, history_topic, opt_history);
 
     Ok(iotmonitor)
 }

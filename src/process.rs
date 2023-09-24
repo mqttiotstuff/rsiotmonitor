@@ -5,7 +5,7 @@ use std::path::Path;
 use std::process::Stdio;
 
 use log::{debug, info};
-use nix::unistd::{setsid};
+use nix::unistd::setsid;
 use std::error::Error;
 use std::result::Result;
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -14,7 +14,6 @@ use tokio::process::Command;
 use crate::AdditionalProcessInformation;
 
 use std::convert::TryInto;
-
 
 pub const MAGIC: &str = "IOTMONITORMAGIC";
 
@@ -127,7 +126,6 @@ pub fn run_process_with_fork(
     name: &String,
     processinfo: &mut AdditionalProcessInformation,
 ) -> Result<(), Box<dyn std::error::Error>> {
-
     let magicprocessheader: String = String::from(MAGIC) + "_";
 
     use nix::sys::signal::*;

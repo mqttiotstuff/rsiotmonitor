@@ -26,7 +26,6 @@ use history::History;
 #[derive(Derivative)]
 #[derivative(Debug)]
 pub struct IOTMonitor {
-
     /// broker connection properties
     pub mqtt_config: crate::config::MqttConfig,
 

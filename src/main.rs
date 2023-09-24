@@ -399,9 +399,10 @@ async fn start(config: IOTMonitor) -> Result<(), Box<dyn RustError>> {
                             let _r = history_subscription_client.disconnect().await;
                         };
                     }
-                    wait_2s().await; // ignore the result
+                    let _ = wait_2s().await; // ignore the result
                 }
             }));
+            debug!("current handle : {:?}", history_handle);
         }
     }
 
@@ -474,7 +475,8 @@ async fn start(config: IOTMonitor) -> Result<(), Box<dyn RustError>> {
                                     }
 
                                     debug!("launching process {}", &additional_infos.exec);
-                                    let process_launch_result = process::run_process_with_fork(name, additional_infos);
+                                    let process_launch_result =
+                                        process::run_process_with_fork(name, additional_infos);
                                     if let Err(processerr) = process_launch_result {
                                         warn!("error launching process: {:?}", processerr);
                                     }
@@ -541,8 +543,8 @@ async fn start(config: IOTMonitor) -> Result<(), Box<dyn RustError>> {
         }
 
         // wait 1s before retry to reconnect
-        #[allow(unused_must_use)]
-        wait_2s().await;
+
+        let _ = wait_2s().await;
     } // loop to reconnect
 
     Ok(())

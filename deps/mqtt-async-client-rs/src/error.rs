@@ -1,6 +1,6 @@
 use std::{
     convert::From,
-    fmt::{Debug, Display, Formatter, self},
+    fmt::{self, Debug, Display, Formatter},
 };
 
 /// Fallible result values returned by the library.
@@ -19,7 +19,7 @@ pub enum Error {
     String(String),
 
     #[doc(hidden)]
-    _NonExhaustive
+    _NonExhaustive,
 }
 
 impl Error {

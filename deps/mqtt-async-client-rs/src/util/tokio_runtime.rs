@@ -1,8 +1,5 @@
 use std::future::Future;
-use tokio::{
-    self,
-    task::JoinHandle
-};
+use tokio::{self, task::JoinHandle};
 
 /// Represents a tokio runtime on which to spawn tasks.
 #[derive(Clone, Debug)]
@@ -17,9 +14,10 @@ pub enum TokioRuntime {
 impl TokioRuntime {
     /// Spawn a task onto the selected tokio runtime.
     pub fn spawn<F>(&self, f: F) -> JoinHandle<F::Output>
-        where
-            F: Future + Send + 'static,
-            F::Output: Send + 'static, {
+    where
+        F: Future + Send + 'static,
+        F::Output: Send + 'static,
+    {
         match self {
             TokioRuntime::Default => tokio::spawn(f),
             TokioRuntime::Handle(h) => h.spawn(f),

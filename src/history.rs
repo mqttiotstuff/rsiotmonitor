@@ -141,7 +141,7 @@ impl History {
                 .set_compression(parquet::basic::Compression::SNAPPY)
                 .build(),
         );
-        let file = fs::File::create(&path).unwrap();
+        let file = fs::File::create(path).unwrap();
         let mut writer = SerializedFileWriter::new(file, schema, props).unwrap();
 
         // writing rows count ..
@@ -358,12 +358,11 @@ pub fn test_storage() {
 }
 
 #[test]
-pub fn test_storage_timestamp() {
+pub fn test_storage_timestamp() -> Result<(), Box<dyn Error>> {
     let h = History::init().unwrap();
     for t in 0..63 {
         let e: i64 = 1 << t;
-        h.store_event_with_timestamp(e, "a".into(), "b".as_bytes())
-            .unwrap();
+        h.store_event_with_timestamp(e, "a".into(), "b".as_bytes())?;
     }
 
     // dump
@@ -378,8 +377,8 @@ pub fn test_storage_timestamp() {
             let timestamp = i64::from_u8(&a.0);
 
             let tp = TopicPayload::from_u8(&a.1);
-            let topic = tp.topic;
-            let payload = tp.payload;
+            let _topic = tp.topic;
+            let _payload = tp.payload;
 
             println!("{}", timestamp);
 
@@ -388,30 +387,36 @@ pub fn test_storage_timestamp() {
         }
     }
 
-    h.export_to_parquet("final.parquet", None, true);
+    info!("{} written", cpt);
+
+    h.export_to_parquet("final.parquet", None, true)?;
+
+    Ok(())
 }
 
 #[test]
-pub fn test_export() {
-    let h = History::init().unwrap();
-    for i in 0..100_000 {
-        h.store_event("a".into(), "b".as_bytes()).unwrap();
-        h.store_event("a1".into(), "b".as_bytes()).unwrap();
-        h.store_event("a2".into(), "b".as_bytes()).unwrap();
-        h.store_event("a3".into(), "b".as_bytes()).unwrap();
-        h.store_event("a4".into(), "b".as_bytes()).unwrap();
+pub fn test_export() -> Result<(), Box<dyn Error>> {
+    let h = History::init()?;
+    for _i in 0..100_000 {
+        h.store_event("a".into(), "b".as_bytes())?;
+        h.store_event("a1".into(), "b".as_bytes())?;
+        h.store_event("a2".into(), "b".as_bytes())?;
+        h.store_event("a3".into(), "b".as_bytes())?;
+        h.store_event("a4".into(), "b".as_bytes())?;
     }
     // export to parquet
-    h.export_to_parquet("test.parquet", None, true).unwrap();
+    h.export_to_parquet("test.parquet", None, true)?;
 
     // no more elements
     assert!(h.database.iter(&ReadOptions::new()).next().is_none());
+    Ok(())
 }
 
 #[test]
-pub fn export() {
-    let h = History::init().unwrap();
+pub fn export() -> Result<(), Box<dyn Error>> {
+    let h = History::init()?;
 
     // export to parquet
-    h.export_to_parquet("h.parquet", None, false).unwrap();
+    h.export_to_parquet("h.parquet", None, false)?;
+    Ok(())
 }

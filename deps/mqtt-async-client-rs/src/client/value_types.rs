@@ -1,9 +1,5 @@
 use crate::Result;
-use mqttrs::{
-    QoS,
-    SubscribeReturnCodes,
-    SubscribeTopic,
-};
+use mqttrs::{QoS, SubscribeReturnCodes, SubscribeTopic};
 use tokio::time::Duration;
 
 /// Arguments for a publish operation.
@@ -74,9 +70,7 @@ pub struct Subscribe {
 impl Subscribe {
     /// Construct a new instance.
     pub fn new(v: Vec<SubscribeTopic>) -> Subscribe {
-        Subscribe {
-            topics: v,
-        }
+        Subscribe { topics: v }
     }
 
     /// Returns the topics selected.
@@ -99,9 +93,10 @@ impl SubscribeResult {
 
     /// Returns an error if any return codes from the operation were `Failure`.
     pub fn any_failures(&self) -> Result<()> {
-        let any_failed =
-            self.return_codes().iter()
-                .any(|rc| *rc == SubscribeReturnCodes::Failure);
+        let any_failed = self
+            .return_codes()
+            .iter()
+            .any(|rc| *rc == SubscribeReturnCodes::Failure);
         if any_failed {
             return Err(format!("Some subscribes failed: {:#?}", self.return_codes()).into());
         }
@@ -111,7 +106,7 @@ impl SubscribeResult {
 
 /// Arguments for an unsubscribe operation.
 pub struct Unsubscribe {
-    topics: Vec<UnsubscribeTopic>
+    topics: Vec<UnsubscribeTopic>,
 }
 
 impl Unsubscribe {
@@ -134,7 +129,9 @@ pub struct UnsubscribeTopic {
 impl UnsubscribeTopic {
     /// Construct a new instance.
     pub fn new(topic_name: String) -> UnsubscribeTopic {
-        UnsubscribeTopic { topic_name: topic_name }
+        UnsubscribeTopic {
+            topic_name: topic_name,
+        }
     }
 
     /// Returns the topic name for the operation.
@@ -171,7 +168,7 @@ pub enum KeepAlive {
     /// Send a keep alive ping packet every `secs` seconds.
     Enabled {
         /// The number of seconds between packets.
-        secs: u16
+        secs: u16,
     },
 }
 
@@ -183,7 +180,7 @@ impl KeepAlive {
         if secs == 0 {
             panic!("KeepAlive secs == 0 not permitted");
         }
-        KeepAlive::Enabled { secs, }
+        KeepAlive::Enabled { secs }
     }
 
     /// Disable keep alive functionality.
@@ -212,9 +209,7 @@ impl KeepAlive {
     pub fn as_duration(&self) -> Option<Duration> {
         match self {
             KeepAlive::Disabled => None,
-            KeepAlive::Enabled { secs } => {
-                Some(Duration::from_secs(*secs as u64))
-            },
+            KeepAlive::Enabled { secs } => Some(Duration::from_secs(*secs as u64)),
         }
     }
 }
