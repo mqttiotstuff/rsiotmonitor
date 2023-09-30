@@ -22,3 +22,8 @@ This is new rust implementation of the iotmonitor project.
     [] web api for information
     [] light agent rules definitions
     [] application platform echosystem building
+
+
+## Build / install
+
+    cargo install --git https://github.com/mqttiotstuff/rsiotmonitor rsiotmonitor
