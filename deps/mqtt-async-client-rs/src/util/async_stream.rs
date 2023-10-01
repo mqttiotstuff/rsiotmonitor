@@ -3,12 +3,12 @@ use futures_util::{
     sink::{Sink, SinkExt},
     stream::Stream,
 };
+#[cfg(feature = "websocket")]
+use std::io;
 use std::{
     pin::Pin,
     task::{Context, Poll},
 };
-#[cfg(feature = "websocket")]
-use std::io;
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
     net::TcpStream,
@@ -16,7 +16,10 @@ use tokio::{
 #[cfg(feature = "tls")]
 use tokio_rustls::client::TlsStream;
 #[cfg(feature = "websocket")]
-use tokio_tungstenite::{tungstenite::{protocol::Message, Error}, MaybeTlsStream, WebSocketStream};
+use tokio_tungstenite::{
+    tungstenite::{protocol::Message, Error},
+    MaybeTlsStream, WebSocketStream,
+};
 
 /// A wrapper for the data connection, which may or may not be encrypted.
 pub(crate) enum AsyncStream {

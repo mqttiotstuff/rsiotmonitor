@@ -1,14 +1,17 @@
 use std::io;
 
 use futures_util::future::try_join_all;
-use log::{info, debug};
-use mqtt_v5_broker::{broker::{Broker, BrokerMessage}, client};
-use tokio::{runtime::Builder, net::TcpListener};
+use log::{debug, info};
+use mqtt_v5_broker::{
+    broker::{Broker, BrokerMessage},
+    client,
+};
+use tokio::{net::TcpListener, runtime::Builder};
 
-
-
-async fn tcp_server_loop(broker_tx: tokio::sync::mpsc::Sender<BrokerMessage>, bind_options: String) -> io::Result<()> {
-    
+async fn tcp_server_loop(
+    broker_tx: tokio::sync::mpsc::Sender<BrokerMessage>,
+    bind_options: String,
+) -> io::Result<()> {
     info!("Listening on {}", bind_options);
 
     let listener = TcpListener::bind(bind_options).await?;
@@ -20,7 +23,6 @@ async fn tcp_server_loop(broker_tx: tokio::sync::mpsc::Sender<BrokerMessage>, bi
     }
 }
 
-
 async fn launch_mqtt_server() -> Result<(), Box<dyn std::error::Error>> {
     let broker = Broker::new();
 
@@ -31,9 +33,9 @@ async fn launch_mqtt_server() -> Result<(), Box<dyn std::error::Error>> {
 
     let local_bind_option = "0.0.0.0:1884".to_string();
     let local_broker_tx = broker_tx.clone();
-    let tcp_listener = 
-        tokio::task::spawn(async move { 
-            tcp_server_loop(local_broker_tx.clone(), local_bind_option).await;} );
+    let tcp_listener = tokio::task::spawn(async move {
+        let _ = tcp_server_loop(local_broker_tx.clone(), local_bind_option).await;
+    });
 
     // tcp_listener,
     // ,  websocket_listener
@@ -44,9 +46,9 @@ async fn launch_mqtt_server() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn test_mqtt_performances() {
-    let rt  = Builder::new_multi_thread().enable_all().build().unwrap();
+    let rt = Builder::new_multi_thread().enable_all().build().unwrap();
 
     rt.block_on(async {
-        launch_mqtt_server().await;
+        launch_mqtt_server().await.unwrap();
     });
 }

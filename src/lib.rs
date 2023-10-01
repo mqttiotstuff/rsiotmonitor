@@ -22,18 +22,17 @@ use std::{
 use derivative::Derivative;
 use history::History;
 
-use log::debug;
-
 /// General iotmonitor configuration, with mqtt configuration and monitored device or agents
 #[derive(Derivative)]
 #[derivative(Debug)]
 pub struct IOTMonitor {
+    /// broker connection properties
     pub mqtt_config: crate::config::MqttConfig,
 
     pub history_topic: Option<String>,
 
     #[derivative(Debug = "ignore")]
-    pub history: Option<Box<History>>,
+    pub history: Option<Arc<History>>,
 
     #[derivative(Debug = "ignore")]
     pub state_connection: Option<Arc<sqlite::ConnectionWithFullMutex>>,
@@ -43,16 +42,16 @@ pub struct IOTMonitor {
 }
 
 impl IOTMonitor {
+    /// initialize the structure with no active database connection
     pub fn new(
         mqtt_config: crate::config::MqttConfig,
-        state_connection: Option<Arc<sqlite::ConnectionWithFullMutex>>,
         monitored_devices: HashMap<String, Box<MonitoringInfo>>,
         history_topic: Option<String>,
-        history: Option<Box<History>>,
+        history: Option<Arc<History>>,
     ) -> Self {
         // return the IOTMonitor structure
         IOTMonitor {
-            mqtt_config: mqtt_config,
+            mqtt_config,
             monitored_devices,
             state_connection: None,
             history_topic,

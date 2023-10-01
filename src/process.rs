@@ -1,7 +1,7 @@
-use std::ffi::{CString};
+use std::ffi::CString;
 use std::fmt;
 use std::fs::{read_dir, DirEntry, File, FileType, ReadDir};
-use std::path::{Path};
+use std::path::Path;
 use std::process::Stdio;
 
 use log::{debug, info};
@@ -12,6 +12,8 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 
 use crate::AdditionalProcessInformation;
+
+use std::convert::TryInto;
 
 pub const MAGIC: &str = "IOTMONITORMAGIC";
 
@@ -124,7 +126,6 @@ pub fn run_process_with_fork(
     name: &String,
     processinfo: &mut AdditionalProcessInformation,
 ) -> Result<(), Box<dyn std::error::Error>> {
-
     let magicprocessheader: String = String::from(MAGIC) + "_";
 
     use nix::sys::signal::*;
@@ -192,9 +193,7 @@ pub fn launch_process(
     // construct command line
 
     let mut cmd = Command::new("bash");
-    let all = cmd
-        .args(["-c", &exec])
-        .env("IOTMONITORMAGIC", name.clone());
+    let all = cmd.args(["-c", &exec]).env("IOTMONITORMAGIC", name.clone());
 
     // Specify that we want the command's standard output piped back to us.
     // By default, standard input/output/error will be inherited from the

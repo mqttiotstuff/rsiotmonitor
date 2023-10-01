@@ -9,17 +9,7 @@ pub(crate) use client::ClientOptions;
 
 mod value_types;
 pub use value_types::{
-    KeepAlive,
-    Publish,
-    ReadResult,
-    Subscribe,
-    SubscribeResult,
-    Unsubscribe,
-    UnsubscribeTopic,
+    KeepAlive, Publish, ReadResult, Subscribe, SubscribeResult, Unsubscribe, UnsubscribeTopic,
 };
 
-pub use mqttrs::{
-    QoS,
-    SubscribeReturnCodes,
-    SubscribeTopic,
-};
+pub use mqttrs::{QoS, SubscribeReturnCodes, SubscribeTopic};

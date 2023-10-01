@@ -1,0 +1,2 @@
+[target.armv7-unknown-linux-gnueabihf]
+image = "frett27/armv7cross:latest"

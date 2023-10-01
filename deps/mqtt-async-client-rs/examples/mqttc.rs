@@ -1,25 +1,14 @@
 //! A simple command-line client to test the MQTT library.
 #![deny(warnings)]
 
-use futures_util::{
-    stream::{
-        futures_unordered::FuturesUnordered,
-        StreamExt,
-    },
-};
+use futures_util::stream::{futures_unordered::FuturesUnordered, StreamExt};
 #[allow(unused_imports)]
-use log::{trace, debug, error, info};
+use log::{debug, error, info, trace};
 use mqtt_async_client::{
     client::{
-        Client,
-        KeepAlive,
-        Publish as PublishOpts,
-        QoS,
-        Subscribe as SubscribeOpts,
-        SubscribeTopic,
+        Client, KeepAlive, Publish as PublishOpts, QoS, Subscribe as SubscribeOpts, SubscribeTopic,
     },
-    Error,
-    Result,
+    Error, Result,
 };
 #[cfg(feature = "tls")]
 use rustls;
@@ -105,8 +94,7 @@ struct Publish {
     qos: u8,
 
     /// Send multiple copies of the message.
-    #[structopt(long,
-                default_value("1"))]
+    #[structopt(long, default_value("1"))]
     repeats: u32,
 
     #[structopt(long)]
@@ -121,7 +109,7 @@ struct Subscribe {
     #[structopt(long,
                 possible_values(&["0", "1", "2"]),
                 default_value("0"))]
-    qos:u8,
+    qos: u8,
 }
 
 #[tokio::main]
@@ -146,9 +134,7 @@ async fn publish(pub_args: Publish, args: Args) -> Result<()> {
     let mut p = PublishOpts::new(pub_args.topic.clone(), pub_args.message.as_bytes().to_vec());
     p.set_qos(int_to_qos(pub_args.qos));
     p.set_retain(pub_args.retain);
-    let futs = (0..(pub_args.repeats)).map(|_| {
-        client.publish(&p)
-    });
+    let futs = (0..(pub_args.repeats)).map(|_| client.publish(&p));
     let futs: FuturesUnordered<_> = futs.collect();
     let results_fut = futs.collect::<Vec<Result<()>>>();
     for res in results_fut.await {
@@ -156,7 +142,10 @@ async fn publish(pub_args: Publish, args: Args) -> Result<()> {
             error!("Error publishing: {}", e);
         }
     }
-    info!("Published topic={}, message={}", pub_args.topic, pub_args.message);
+    info!(
+        "Published topic={}, message={}",
+        pub_args.topic, pub_args.message
+    );
     client.disconnect().await?;
     Ok(())
 }
@@ -167,9 +156,16 @@ async fn subscribe(sub_args: Subscribe, args: Args) -> Result<()> {
         return Err(Error::from("You must subscribe to at least one topic."));
     }
     client.connect().await?;
-    let subopts = SubscribeOpts::new(sub_args.topic.iter().map(|t|
-        SubscribeTopic { qos: int_to_qos(sub_args.qos), topic_path: t.clone() }
-    ).collect());
+    let subopts = SubscribeOpts::new(
+        sub_args
+            .topic
+            .iter()
+            .map(|t| SubscribeTopic {
+                qos: int_to_qos(sub_args.qos),
+                topic_path: t.clone(),
+            })
+            .collect(),
+    );
     let subres = client.subscribe(subopts).await?;
     subres.any_failures()?;
     loop {
@@ -184,17 +180,17 @@ async fn subscribe(sub_args: Subscribe, args: Args) -> Result<()> {
 fn client_from_args(args: Args) -> Result<Client> {
     let mut b = Client::builder();
     b.set_url_string(&args.url)?
-     .set_username(args.username)
-     .set_password(args.password.map(|s| s.as_bytes().to_vec()))
-     .set_client_id(args.client_id)
-     .set_connect_retry_delay(Duration::from_secs(1))
-     .set_keep_alive(KeepAlive::from_secs(args.keep_alive))
-     .set_operation_timeout(Duration::from_secs(args.op_timeout as u64))
-     .set_automatic_connect(match args.auto_connect.as_str() {
-         "true" => true,
-         "false" => false,
-         _ => panic!("Bad validation"),
-     });
+        .set_username(args.username)
+        .set_password(args.password.map(|s| s.as_bytes().to_vec()))
+        .set_client_id(args.client_id)
+        .set_connect_retry_delay(Duration::from_secs(1))
+        .set_keep_alive(KeepAlive::from_secs(args.keep_alive))
+        .set_operation_timeout(Duration::from_secs(args.op_timeout as u64))
+        .set_automatic_connect(match args.auto_connect.as_str() {
+            "true" => true,
+            "false" => false,
+            _ => panic!("Bad validation"),
+        });
 
     #[cfg(feature = "tls")]
     {
@@ -202,33 +198,38 @@ fn client_from_args(args: Args) -> Result<Client> {
             let mut cc = rustls::ClientConfig::new();
             let cert_bytes = std::fs::read(s)?;
             let cert = rustls::internal::pemfile::certs(&mut Cursor::new(&cert_bytes[..]))
-                .map_err(|_| Error::from("Error parsing server CA cert file"))?
-                [0].clone();
-            cc.root_store.add(&cert)
+                .map_err(|_| Error::from("Error parsing server CA cert file"))?[0]
+                .clone();
+            cc.root_store
+                .add(&cert)
                 .map_err(|e| Error::from_std_err(e))?;
             Some(cc)
         } else if args.tls_mozilla_root_cas {
             let mut cc = rustls::ClientConfig::new();
-            cc.root_store.add_server_trust_anchors(&webpki_roots::TLS_SERVER_ROOTS);
+            cc.root_store
+                .add_server_trust_anchors(&webpki_roots::TLS_SERVER_ROOTS);
             Some(cc)
         } else {
             None
         };
 
-        let cc = if let Some((crt_file, key_file)) = args.tls_client_crt_file.zip(args.tls_client_rsa_key_file) {
+        let cc = if let Some((crt_file, key_file)) =
+            args.tls_client_crt_file.zip(args.tls_client_rsa_key_file)
+        {
             let cert_bytes = std::fs::read(crt_file)?;
             let client_cert = rustls::internal::pemfile::certs(&mut Cursor::new(&cert_bytes[..]))
-                .map_err(|_| Error::from("Error parsing client cert file"))?
-                [0].clone();
+                .map_err(|_| Error::from("Error parsing client cert file"))?[0]
+                .clone();
 
             let key_bytes = std::fs::read(key_file)?;
-            let client_key = rustls::internal::pemfile::rsa_private_keys(&mut Cursor::new(&key_bytes[..]))
-                .map_err(|_| Error::from("Error parsing client key file"))?
-                [0].clone();
+            let client_key =
+                rustls::internal::pemfile::rsa_private_keys(&mut Cursor::new(&key_bytes[..]))
+                    .map_err(|_| Error::from("Error parsing client key file"))?[0]
+                    .clone();
 
             let mut cc = cc.unwrap_or_else(rustls::ClientConfig::new);
             cc.set_single_client_cert(vec![client_cert], client_key)
-              .map_err(|e| Error::from(format!("Error setting client cert: {}", e)))?;
+                .map_err(|e| Error::from(format!("Error setting client cert: {}", e)))?;
             Some(cc)
         } else {
             cc

@@ -1,78 +1,42 @@
-use bytes::BytesMut;
-#[cfg(feature = "websocket")]
-use tokio_tungstenite::tungstenite::http::Uri;
 use crate::{
     client::{
         builder::ClientBuilder,
-        value_types::{
-            KeepAlive,
-            Publish,
-            ReadResult,
-            Subscribe,
-            SubscribeResult,
-            Unsubscribe,
-        },
+        value_types::{KeepAlive, Publish, ReadResult, Subscribe, SubscribeResult, Unsubscribe},
     },
-    Error,
-    Result,
-    util::{
-        AsyncStream,
-        FreePidList,
-        TokioRuntime,
-    }
+    util::{AsyncStream, FreePidList, TokioRuntime},
+    Error, Result,
 };
+use bytes::BytesMut;
 use futures_util::{
-    future::{
-        FutureExt,
-        pending,
-    },
+    future::{pending, FutureExt},
     select,
 };
 #[cfg(feature = "websocket")]
 use http::request::Request;
 use log::{debug, error, info, trace};
-use mqttrs::{
-    ConnectReturnCode,
-    Packet,
-    Pid,
-    QoS,
-    QosPid,
-    self,
-    SubscribeTopic,
-};
+use mqttrs::{self, ConnectReturnCode, Packet, Pid, QoS, QosPid, SubscribeTopic};
 #[cfg(feature = "tls")]
 use rustls;
 use std::{
     cmp::min,
     collections::BTreeMap,
+    convert::TryFrom,
     fmt,
     sync::{
-        Arc,
         atomic::{AtomicBool, Ordering},
-        Mutex,
+        Arc, Mutex,
     },
 };
 use tokio::{
-    io::{
-        AsyncReadExt,
-        AsyncWriteExt,
-    },
+    io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
-    sync::{
-        mpsc,
-        oneshot,
-    },
-    time::{
-        sleep,
-        sleep_until,
-        Duration,
-        error::Elapsed,
-        Instant,
-        timeout,
-    },
+    sync::{mpsc, oneshot},
+    time::{error::Elapsed, sleep, sleep_until, timeout, Duration, Instant},
 };
 #[cfg(feature = "tls")]
-use tokio_rustls::{self, webpki::DNSNameRef, TlsConnector};
+use tokio_rustls::{self, TlsConnector};
+#[cfg(feature = "websocket")]
+use tokio_tungstenite::tungstenite::http::Uri;
 use url::Url;
 
 /// An MQTT client.
@@ -108,8 +72,8 @@ pub struct Client {
 impl fmt::Debug for Client {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Client")
-         .field("options", &self.options)
-         .finish()
+            .field("options", &self.options)
+            .finish()
     }
 }
 
@@ -133,18 +97,18 @@ pub(crate) struct ClientOptions {
 impl fmt::Debug for ClientOptions {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ClientOptions")
-         .field("url", &self.url)
-         .field("username", &self.username)
-         // Deliberately skipping password field here to
-         // avoid accidentially leaking it
-         .field("keep_alive", &self.keep_alive)
-         .field("client_id", &self.client_id)
-         .field("packet_buffer_len", &self.packet_buffer_len)
-         .field("max_packet_len", &self.max_packet_len)
-         .field("operation_timeout", &self.operation_timeout)
-         .field("automatic_connect", &self.automatic_connect)
-         .field("connect_retry_delay", &self.connect_retry_delay)
-         .finish()
+            .field("url", &self.url)
+            .field("username", &self.username)
+            // Deliberately skipping password field here to
+            // avoid accidentially leaking it
+            .field("keep_alive", &self.keep_alive)
+            .field("client_id", &self.client_id)
+            .field("packet_buffer_len", &self.packet_buffer_len)
+            .field("max_packet_len", &self.max_packet_len)
+            .field("operation_timeout", &self.operation_timeout)
+            .field("automatic_connect", &self.automatic_connect)
+            .field("connect_retry_delay", &self.connect_retry_delay)
+            .finish()
     }
 }
 
@@ -315,30 +279,39 @@ impl Client {
         });
         match qos {
             QoS::AtMostOnce => {
-                let res = timeout(self.options.operation_timeout,
-                                  self.write_only_packet(&p2)).await;
+                let res =
+                    timeout(self.options.operation_timeout, self.write_only_packet(&p2)).await;
                 if let Err(Elapsed { .. }) = res {
-                    return Err(format!("Timeout writing publish after {}ms",
-                                       self.options.operation_timeout.as_millis()).into());
+                    return Err(format!(
+                        "Timeout writing publish after {}ms",
+                        self.options.operation_timeout.as_millis()
+                    )
+                    .into());
                 }
                 res.expect("No timeout")?;
             }
             QoS::AtLeastOnce => {
-                let res = timeout(self.options.operation_timeout,
-                                  self.write_response_packet(&p2)).await;
+                let res = timeout(
+                    self.options.operation_timeout,
+                    self.write_response_packet(&p2),
+                )
+                .await;
                 if let Err(Elapsed { .. }) = res {
                     // We report this but can't really deal with it properly.
                     // The protocol says we can't re-use the packet ID so we have to leak it
                     // and potentially run out of packet IDs.
-                    return Err(format!("Timeout waiting for Puback after {}ms",
-                                       self.options.operation_timeout.as_millis()).into());
+                    return Err(format!(
+                        "Timeout waiting for Puback after {}ms",
+                        self.options.operation_timeout.as_millis()
+                    )
+                    .into());
                 }
                 let res = res.expect("No timeout")?;
                 match res {
                     Packet::Puback(pid) => self.free_write_pid(pid)?,
                     _ => error!("Bad packet response for publish: {:#?}", res),
                 }
-            },
+            }
             QoS::ExactlyOnce => panic!("Not reached"),
         };
         Ok(())
@@ -350,19 +323,26 @@ impl Client {
         let pid = self.alloc_write_pid()?;
         // TODO: Support subscribe to qos == ExactlyOnce.
         if s.topics().iter().any(|t| t.qos == QoS::ExactlyOnce) {
-            return Err("Qos::ExactlyOnce is not supported right now".into())
+            return Err("Qos::ExactlyOnce is not supported right now".into());
         }
         let p = Packet::Subscribe(mqttrs::Subscribe {
             pid,
             topics: s.topics().to_owned(),
         });
-        let res = timeout(self.options.operation_timeout, self.write_response_packet(&p)).await;
+        let res = timeout(
+            self.options.operation_timeout,
+            self.write_response_packet(&p),
+        )
+        .await;
         if let Err(Elapsed { .. }) = res {
             // We report this but can't really deal with it properly.
             // The protocol says we can't re-use the packet ID so we have to leak it
             // and potentially run out of packet IDs.
-            return Err(format!("Timeout waiting for Suback after {}ms",
-                               self.options.operation_timeout.as_millis()).into());
+            return Err(format!(
+                "Timeout waiting for Suback after {}ms",
+                self.options.operation_timeout.as_millis()
+            )
+            .into());
         }
         let res = res.expect("No timeout")?;
         match res {
@@ -371,14 +351,14 @@ impl Client {
                 return_codes: rcs,
             }) if suback_pid == pid => {
                 self.free_write_pid(pid)?;
-                Ok(SubscribeResult {
-                    return_codes: rcs
-                })
-            },
+                Ok(SubscribeResult { return_codes: rcs })
+            }
             _ => {
-                return Err(format!("Unexpected packet waiting for Suback(Pid={:?}): {:#?}",
-                                   pid, res)
-                           .into());
+                return Err(format!(
+                    "Unexpected packet waiting for Suback(Pid={:?}): {:#?}",
+                    pid, res
+                )
+                .into());
             }
         }
     }
@@ -389,28 +369,39 @@ impl Client {
         let pid = self.alloc_write_pid()?;
         let p = Packet::Unsubscribe(mqttrs::Unsubscribe {
             pid,
-            topics: u.topics().iter().map(|ut| ut.topic_name().to_owned())
-                     .collect::<Vec<String>>(),
+            topics: u
+                .topics()
+                .iter()
+                .map(|ut| ut.topic_name().to_owned())
+                .collect::<Vec<String>>(),
         });
-        let res = timeout(self.options.operation_timeout, self.write_response_packet(&p)).await;
+        let res = timeout(
+            self.options.operation_timeout,
+            self.write_response_packet(&p),
+        )
+        .await;
         if let Err(Elapsed { .. }) = res {
             // We report this but can't really deal with it properly.
             // The protocol says we can't re-use the packet ID so we have to leak it
             // and potentially run out of packet IDs.
-            return Err(format!("Timeout waiting for Unsuback after {}ms",
-                               self.options.operation_timeout.as_millis()).into());
+            return Err(format!(
+                "Timeout waiting for Unsuback after {}ms",
+                self.options.operation_timeout.as_millis()
+            )
+            .into());
         }
         let res = res.expect("No timeout")?;
         match res {
-            Packet::Unsuback(ack_pid)
-            if ack_pid == pid => {
+            Packet::Unsuback(ack_pid) if ack_pid == pid => {
                 self.free_write_pid(pid)?;
                 Ok(())
-            },
+            }
             _ => {
-                return Err(format!("Unexpected packet waiting for Unsuback(Pid={:?}): {:#?}",
-                                   pid, res)
-                           .into());
+                return Err(format!(
+                    "Unexpected packet waiting for Unsuback(Pid={:?}): {:#?}",
+                    pid, res
+                )
+                .into());
             }
         }
     }
@@ -432,7 +423,7 @@ impl Client {
                     QosPid::AtMostOnce => (),
                     QosPid::AtLeastOnce(pid) => {
                         self.write_only_packet(&Packet::Puback(pid)).await?;
-                    },
+                    }
                     QosPid::ExactlyOnce(_) => {
                         error!("Received publish with unimplemented QoS: ExactlyOnce");
                     }
@@ -442,7 +433,7 @@ impl Client {
                     payload: p.payload,
                 };
                 Ok(rr)
-            },
+            }
             _ => {
                 return Err(format!("Unexpected packet waiting for read: {:#?}", r).into());
             }
@@ -454,11 +445,13 @@ impl Client {
         self.check_io_task()?;
         debug!("Disconnecting");
         let p = Packet::Disconnect;
-        let res = timeout(self.options.operation_timeout,
-                          self.write_only_packet(&p)).await;
+        let res = timeout(self.options.operation_timeout, self.write_only_packet(&p)).await;
         if let Err(Elapsed { .. }) = res {
-            return Err(format!("Timeout waiting for Disconnect to send after {}ms",
-                               self.options.operation_timeout.as_millis()).into());
+            return Err(format!(
+                "Timeout waiting for Disconnect to send after {}ms",
+                self.options.operation_timeout.as_millis()
+            )
+            .into());
         }
         res.expect("No timeout")?;
         self.shutdown().await?;
@@ -473,13 +466,18 @@ impl Client {
     }
 
     fn free_write_pid(&self, p: Pid) -> Result<()> {
-        match self.free_write_pids.lock().expect("not poisoned").free(p.get()) {
+        match self
+            .free_write_pids
+            .lock()
+            .expect("not poisoned")
+            .free(p.get())
+        {
             true => Err(Error::from("Pid was already free")),
-            false => Ok(())
+            false => Ok(()),
         }
     }
 
-    async fn shutdown(&mut self) -> Result <()> {
+    async fn shutdown(&mut self) -> Result<()> {
         let c = self.check_io_task()?;
         c.halt.store(true, Ordering::SeqCst);
         self.write_request(IoType::ShutdownConnection, None).await?;
@@ -488,9 +486,9 @@ impl Client {
     }
 
     async fn write_only_packet(&self, p: &Packet) -> Result<()> {
-        self.write_request(IoType::WriteOnly { packet: p.clone(), }, None)
-            .await.map(|_v| ())
-
+        self.write_request(IoType::WriteOnly { packet: p.clone() }, None)
+            .await
+            .map(|_v| ())
     }
 
     async fn write_response_packet(&self, p: &Packet) -> Result<Packet> {
@@ -499,19 +497,25 @@ impl Client {
             response_pid: packet_pid(p).expect("packet_pid"),
         };
         let (tx, rx) = oneshot::channel::<IoResult>();
-        self.write_request(io_type, Some(tx))
-            .await?;
+        self.write_request(io_type, Some(tx)).await?;
         // TODO: Add a timeout?
         let res = rx.await.map_err(Error::from_std_err)?;
         res.result.map(|v| v.expect("return packet"))
     }
 
-    async fn write_request(&self, io_type: IoType, tx_result: Option<oneshot::Sender<IoResult>>) -> Result<()> {
+    async fn write_request(
+        &self,
+        io_type: IoType,
+        tx_result: Option<oneshot::Sender<IoResult>>,
+    ) -> Result<()> {
         // NB: Some duplication in IoTask::replay_subscriptions.
 
         let c = self.check_io_task()?;
         let req = IoRequest { tx_result, io_type };
-        c.tx_io_requests.clone().send(req).await
+        c.tx_io_requests
+            .clone()
+            .send(req)
+            .await
             .map_err(|e| Error::from_std_err(e))?;
         Ok(())
     }
@@ -550,12 +554,12 @@ async fn connect_stream(opts: &ClientOptions) -> Result<AsyncStream> {
         ConnectionMode::Tls(ref c) => {
             let port = opts.url.port().unwrap_or(8883);
             let connector = TlsConnector::from(c.clone());
-            let domain = DNSNameRef::try_from_ascii_str(host)
+            let domain = tokio_rustls::rustls::ServerName::try_from(host)
                 .map_err(|e| Error::from_std_err(e))?;
             let tcp = TcpStream::connect((host, port)).await?;
             let conn = connector.connect(domain, tcp).await?;
             Ok(AsyncStream::TlsStream(conn))
-        },
+        }
         ConnectionMode::Tcp => {
             let port = opts.url.port().unwrap_or(1883);
             let tcp = TcpStream::connect((host, port)).await?;
@@ -643,7 +647,7 @@ fn connect_packet(opts: &ClientOptions) -> Result<Packet> {
             Some(cid) => cid.to_owned(),
         },
         clean_session: true, // TODO
-        last_will: None, // TODO
+        last_will: None,     // TODO
         username: opts.username.clone(),
         password: opts.password.clone(),
     }))
@@ -695,7 +699,7 @@ impl IoTask {
 
             match self.state {
                 IoTaskState::Halted => return,
-                IoTaskState::Disconnected =>
+                IoTaskState::Disconnected => {
                     match Self::try_connect(&mut self).await {
                         Err(e) => {
                             error!("IoTask: Error connecting: {}", e);
@@ -706,33 +710,32 @@ impl IoTask {
                                 self.state = IoTaskState::Halted;
                                 return;
                             }
-                        },
+                        }
                         Ok(()) => {
                             if let Err(e) = Self::replay_subscriptions(&mut self).await {
-                                error!("IoTask: Error replaying subscriptions on reconnect: {}",
-                                       e);
+                                error!("IoTask: Error replaying subscriptions on reconnect: {}", e);
                             }
-                        },
-                    },
-                IoTaskState::Connected(_) =>
-                    match Self::run_once_connected(&mut self).await {
-                        Err(Error::Disconnected) => {
-                            info!("IoTask: Disconnected, resetting state");
-                            self.state = IoTaskState::Disconnected;
-                        },
-                        Err(e) => {
-                            error!("IoTask: Quitting run loop due to error: {}", e);
-                            return;
-                        },
-                        _ => {},
-                    },
+                        }
+                    }
+                }
+                IoTaskState::Connected(_) => match Self::run_once_connected(&mut self).await {
+                    Err(Error::Disconnected) => {
+                        info!("IoTask: Disconnected, resetting state");
+                        self.state = IoTaskState::Disconnected;
+                    }
+                    Err(e) => {
+                        error!("IoTask: Quitting run loop due to error: {}", e);
+                        return;
+                    }
+                    _ => {}
+                },
             }
         }
     }
 
     async fn try_connect(&mut self) -> Result<()> {
         let stream = connect_stream(&self.options).await?;
-        self.state =  IoTaskState::Connected(IoTaskConnected {
+        self.state = IoTaskState::Connected(IoTaskConnected {
             stream,
             read_buf: BytesMut::with_capacity(self.options.max_packet_len),
             read_bufn: 0,
@@ -748,40 +751,40 @@ impl IoTask {
         let conn = connect_packet(&self.options)?;
         debug!("IoTask: Sending connect packet");
         Self::write_packet(&self.options, c, &conn).await?;
-        let read = Self::read_packet(&mut c.stream,
-                                     &mut c.read_buf,
-                                     &mut c.read_bufn,
-                                     self.options.max_packet_len);
-        let res = match timeout(self.options.operation_timeout,
-                                read).await {
+        let read = Self::read_packet(
+            &mut c.stream,
+            &mut c.read_buf,
+            &mut c.read_bufn,
+            self.options.max_packet_len,
+        );
+        let res = match timeout(self.options.operation_timeout, read).await {
             // Timeout
-            Err(Elapsed { .. }) =>
-                Err(format!("Timeout waiting for Connack after {}ms",
-                            self.options.operation_timeout.as_millis()).into()),
+            Err(Elapsed { .. }) => Err(format!(
+                "Timeout waiting for Connack after {}ms",
+                self.options.operation_timeout.as_millis()
+            )
+            .into()),
 
             // Non-timeout error
             Ok(Err(e)) => Err(e),
 
-            Ok(Ok(Packet::Connack(ca))) => {
-                match ca.code {
-                    ConnectReturnCode::Accepted => {
-                        debug!("IoTask: connack with code=Accepted.");
-                        Ok(())
-                    },
-                    _ => Err(format!("Bad connect return code: {:?}", ca.code).into()),
+            Ok(Ok(Packet::Connack(ca))) => match ca.code {
+                ConnectReturnCode::Accepted => {
+                    debug!("IoTask: connack with code=Accepted.");
+                    Ok(())
                 }
+                _ => Err(format!("Bad connect return code: {:?}", ca.code).into()),
             },
 
             // Other unexpected packets.
-            Ok(Ok(p)) =>
-                Err(format!("Received packet not CONNACK after connect: {:?}", p).into()),
+            Ok(Ok(p)) => Err(format!("Received packet not CONNACK after connect: {:?}", p).into()),
         };
         match res {
             Ok(()) => Ok(()),
             Err(e) => {
                 self.shutdown_conn().await;
                 Err(e)
-            },
+            }
         }
     }
 
@@ -792,8 +795,7 @@ impl IoTask {
         debug!("IoTask: shutdown_conn");
         let c = match self.state {
             // Already disconnected / halted, nothing more to do.
-            IoTaskState::Disconnected |
-            IoTaskState::Halted => return,
+            IoTaskState::Disconnected | IoTaskState::Halted => return,
 
             IoTaskState::Connected(ref mut c) => c,
         };
@@ -816,10 +818,16 @@ impl IoTask {
             let pid = Pid::try_from(65535).expect("non-zero pid");
             let p = Packet::Subscribe(mqttrs::Subscribe {
                 pid,
-                topics: vec![SubscribeTopic { topic_path: t.to_owned(), qos: qos.to_owned() }]
+                topics: vec![SubscribeTopic {
+                    topic_path: t.to_owned(),
+                    qos: qos.to_owned(),
+                }],
             });
             let req = IoRequest {
-                io_type: IoType::WriteAndResponse { packet: p, response_pid: pid },
+                io_type: IoType::WriteAndResponse {
+                    packet: p,
+                    response_pid: pid,
+                },
                 // TODO: I'm not sure how to receive the result; ignore it for now.
                 tx_result: None,
             };
@@ -834,13 +842,14 @@ impl IoTask {
             IoTaskState::Connected(ref mut c) => c,
             _ => panic!("Not reached"),
         };
-        let pingreq_next = self.options.keep_alive.as_duration()
+        let pingreq_next = self
+            .options
+            .keep_alive
+            .as_duration()
             .map(|dur| c.last_write_time + dur);
 
         let pingresp_expected_by =
-            if self.options.keep_alive.is_enabled() &&
-                c.last_pingreq_time > c.last_pingresp_time
-            {
+            if self.options.keep_alive.is_enabled() && c.last_pingreq_time > c.last_pingresp_time {
                 // Expect a ping response before the operation timeout and the keepalive interval.
                 // If the keepalive interval expired first then the "next operation" as
                 // returned by SelectResult below would be Ping even when Pingresp is expected,
@@ -869,8 +878,14 @@ impl IoTask {
         let sel_res: SelectResult = {
             let mut req_fut = Box::pin(self.rx_io_requests.recv().fuse());
             let mut read_fut = Box::pin(
-                Self::read_packet(&mut c.stream, &mut c.read_buf, &mut c.read_bufn,
-                                  self.options.max_packet_len).fuse());
+                Self::read_packet(
+                    &mut c.stream,
+                    &mut c.read_buf,
+                    &mut c.read_bufn,
+                    self.options.max_packet_len,
+                )
+                .fuse(),
+            );
             let mut ping_fut = match pingreq_next {
                 Some(t) => Box::pin(sleep_until(t).boxed().fuse()),
                 None => Box::pin(pending().boxed().fuse()),
@@ -894,7 +909,7 @@ impl IoTask {
                     debug!("IoTask: Req stream closed, shutting down.");
                     self.shutdown_conn().await;
                     return Err(Error::Disconnected);
-                },
+                }
                 Some(req) => return self.handle_io_req(req).await,
             },
             SelectResult::Ping => return self.send_ping().await,
@@ -916,47 +931,47 @@ impl IoTask {
 
         match read {
             Err(Error::Disconnected) => {
-                self.tx_recv_published.send(Err(Error::Disconnected)).await
+                self.tx_recv_published
+                    .send(Err(Error::Disconnected))
+                    .await
                     .map_err(Error::from_std_err)?;
             }
             Err(e) => {
-                self.tx_recv_published.send(
-                        Err(format!("IoTask: Failed to read packet: {:?}", e).into())
-                    )
+                self.tx_recv_published
+                    .send(Err(format!("IoTask: Failed to read packet: {:?}", e).into()))
                     .await
                     .map_err(Error::from_std_err)?;
-            },
-            Ok(p) => {
-                match p {
-                    Packet::Pingresp => {
-                        debug!("IoTask: Received Pingresp");
-                        c.last_pingresp_time = Instant::now();
-                    },
-                    Packet::Publish(_) => {
-                        if let Err(e) = self.tx_recv_published.send(Ok(p)).await {
-                            error!("IoTask: Failed to send Packet: {:?}", e);
-                        }
-                    },
-                    Packet::Connack(_) => {
-                        error!("IoTask: Unexpected CONNACK in handle_read(): {:?}", p);
-                        self.shutdown_conn().await;
-                        return Err(Error::Disconnected);
+            }
+            Ok(p) => match p {
+                Packet::Pingresp => {
+                    debug!("IoTask: Received Pingresp");
+                    c.last_pingresp_time = Instant::now();
+                }
+                Packet::Publish(_) => {
+                    if let Err(e) = self.tx_recv_published.send(Ok(p)).await {
+                        error!("IoTask: Failed to send Packet: {:?}", e);
                     }
-                    _ => {
-                        let pid = packet_pid(&p);
-                        if let Some(pid) = pid {
-                            let pid_response = c.pid_response_map.remove(&pid);
-                            match pid_response {
-                                None => error!("Unknown PID: {:?}", pid),
-                                Some(req) => {
-                                    trace!("Sending response PID={:?} p={:?}",
-                                           pid, p);
-                                    let res = IoResult { result: Ok(Some(p)) };
-                                    Self::send_io_result(req, res)?;
-                                },
+                }
+                Packet::Connack(_) => {
+                    error!("IoTask: Unexpected CONNACK in handle_read(): {:?}", p);
+                    self.shutdown_conn().await;
+                    return Err(Error::Disconnected);
+                }
+                _ => {
+                    let pid = packet_pid(&p);
+                    if let Some(pid) = pid {
+                        let pid_response = c.pid_response_map.remove(&pid);
+                        match pid_response {
+                            None => error!("Unknown PID: {:?}", pid),
+                            Some(req) => {
+                                trace!("Sending response PID={:?} p={:?}", pid, p);
+                                let res = IoResult {
+                                    result: Ok(Some(p)),
+                                };
+                                Self::send_io_result(req, res)?;
                             }
                         }
-                    },
+                    }
                 }
             },
         }
@@ -976,35 +991,40 @@ impl IoTask {
                 error!("IoTask: Error writing packet: {:?}", e);
                 let res = IoResult { result: Err(e) };
                 Self::send_io_result(req, res)?;
-                return Ok(())
+                return Ok(());
             }
             match p {
                 Packet::Subscribe(s) => {
                     for st in s.topics.iter() {
-                        trace!("Tracking subscription topic='{}', qos={:?}",
-                               st.topic_path, st.qos);
+                        trace!(
+                            "Tracking subscription topic='{}', qos={:?}",
+                            st.topic_path,
+                            st.qos
+                        );
                         let _ = self.subscriptions.insert(st.topic_path.clone(), st.qos);
                     }
-                },
+                }
                 Packet::Unsubscribe(u) => {
                     for t in u.topics.iter() {
                         trace!("Tracking unsubscription topic='{}'", t);
                         let _ = self.subscriptions.remove(t);
                     }
-                },
-                _ => {},
+                }
+                _ => {}
             }
             match req.io_type {
                 IoType::WriteOnly { .. } => {
-                    let res = IoResult { result: res.map(|_| None) };
+                    let res = IoResult {
+                        result: res.map(|_| None),
+                    };
                     Self::send_io_result(req, res)?;
-                },
+                }
                 IoType::WriteAndResponse { response_pid, .. } => {
                     c.pid_response_map.insert(response_pid, req);
-                },
+                }
                 IoType::ShutdownConnection => {
                     panic!("Not reached because ShutdownConnection has no packet")
-                },
+                }
             }
         } else {
             match req.io_type {
@@ -1027,10 +1047,10 @@ impl IoTask {
                 if let Err(e) = tx.send(res) {
                     error!("IoTask: Failed to send IoResult={:?}", e);
                 }
-            },
+            }
             None => {
                 debug!("IoTask: Ignored IoResult: {:?}", res);
-            },
+            }
         }
         Ok(())
     }
@@ -1050,11 +1070,7 @@ impl IoTask {
         Ok(())
     }
 
-    async fn write_packet(
-        opts: &ClientOptions,
-        c: &mut IoTaskConnected,
-        p: &Packet,
-    ) -> Result<()> {
+    async fn write_packet(opts: &ClientOptions, c: &mut IoTaskConnected, p: &Packet) -> Result<()> {
         if cfg!(feature = "unsafe-logging") {
             trace!("write_packet p={:#?}", p);
         }
@@ -1072,7 +1088,7 @@ impl IoTask {
         stream: &mut AsyncStream,
         read_buf: &mut BytesMut,
         read_bufn: &mut usize,
-        max_packet_len: usize
+        max_packet_len: usize,
     ) -> Result<Packet> {
         // TODO: Test long packets.
         loop {
@@ -1089,8 +1105,12 @@ impl IoTask {
                 }
                 if let Some(p) = decoded {
                     let new_len = read_buf.len();
-                    trace!("read_packet old_len={} new_len={} read_bufn={}",
-                           old_len, new_len, *read_bufn);
+                    trace!(
+                        "read_packet old_len={} new_len={} read_bufn={}",
+                        old_len,
+                        new_len,
+                        *read_bufn
+                    );
                     *read_bufn -= old_len - new_len;
                     if cfg!(feature = "unsafe-logging") {
                         trace!("read_packet Remaining buf={:?}", &read_buf[0..*read_bufn]);
@@ -1100,7 +1120,11 @@ impl IoTask {
             }
             read_buf.resize(max_packet_len, 0u8);
             let readlen = read_buf.len();
-            trace!("read_packet read read_bufn={} readlen={}", *read_bufn, readlen);
+            trace!(
+                "read_packet read read_bufn={} readlen={}",
+                *read_bufn,
+                readlen
+            );
             let nread = stream.read(&mut read_buf[*read_bufn..readlen]).await?;
             *read_bufn += nread;
             if nread == 0 {
@@ -1138,7 +1162,6 @@ impl Default for ConnectionMode {
         Self::Tcp
     }
 }
-
 
 #[cfg(test)]
 mod test {

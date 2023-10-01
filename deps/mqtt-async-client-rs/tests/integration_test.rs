@@ -15,31 +15,20 @@
 
 #![deny(warnings)]
 
+#[cfg(feature = "tls")]
+use mqtt_async_client::Error;
 use mqtt_async_client::{
-    client::{
-        Client,
-        Publish,
-        QoS,
-        Subscribe,
-        SubscribeTopic,
-        Unsubscribe,
-        UnsubscribeTopic,
-    },
+    client::{Client, Publish, QoS, Subscribe, SubscribeTopic, Unsubscribe, UnsubscribeTopic},
     Result,
 };
 #[cfg(feature = "tls")]
-use mqtt_async_client::Error;
-#[cfg(feature = "tls")]
 use rustls;
-use std::sync::Once;
 #[cfg(feature = "tls")]
 use std::io::Cursor;
+use std::sync::Once;
 use tokio::{
     self,
-    time::{
-        Duration,
-        timeout,
-    },
+    time::{timeout, Duration},
 };
 
 #[test]
@@ -51,9 +40,10 @@ fn pub_and_sub_plain() -> Result<()> {
         c.connect().await?;
 
         // Subscribe
-        let subopts = Subscribe::new(vec![
-            SubscribeTopic { qos: QoS::AtMostOnce, topic_path: "test/pub_and_sub".to_owned() }
-            ]);
+        let subopts = Subscribe::new(vec![SubscribeTopic {
+            qos: QoS::AtMostOnce,
+            topic_path: "test/pub_and_sub".to_owned(),
+        }]);
         let subres = c.subscribe(subopts).await?;
         subres.any_failures()?;
 
@@ -81,14 +71,18 @@ fn pub_and_sub_websocket() -> Result<()> {
         c.connect().await?;
 
         // Subscribe
-        let subopts = Subscribe::new(vec![
-            SubscribeTopic { qos: QoS::AtMostOnce, topic_path: "test/pub_and_sub_websocket".to_owned() }
-            ]);
+        let subopts = Subscribe::new(vec![SubscribeTopic {
+            qos: QoS::AtMostOnce,
+            topic_path: "test/pub_and_sub_websocket".to_owned(),
+        }]);
         let subres = c.subscribe(subopts).await?;
         subres.any_failures()?;
 
         // Publish
-        let mut p = Publish::new("test/pub_and_sub_websocket".to_owned(), "x".as_bytes().to_vec());
+        let mut p = Publish::new(
+            "test/pub_and_sub_websocket".to_owned(),
+            "x".as_bytes().to_vec(),
+        );
         p.set_qos(QoS::AtMostOnce);
         c.publish(&p).await?;
 
@@ -145,9 +139,10 @@ fn pub_and_sub_tls() -> Result<()> {
         c.connect().await?;
 
         // Subscribe
-        let subopts = Subscribe::new(vec![
-            SubscribeTopic { qos: QoS::AtMostOnce, topic_path: "test/pub_and_sub_tls".to_owned() }
-            ]);
+        let subopts = Subscribe::new(vec![SubscribeTopic {
+            qos: QoS::AtMostOnce,
+            topic_path: "test/pub_and_sub_tls".to_owned(),
+        }]);
         let subres = c.subscribe(subopts).await?;
         subres.any_failures()?;
 
@@ -174,16 +169,18 @@ fn unsubscribe() -> Result<()> {
         c.connect().await?;
 
         // Subscribe
-        let subopts = Subscribe::new(vec![
-            SubscribeTopic { qos: QoS::AtMostOnce, topic_path: "test/unsub".to_owned() }
-            ]);
+        let subopts = Subscribe::new(vec![SubscribeTopic {
+            qos: QoS::AtMostOnce,
+            topic_path: "test/unsub".to_owned(),
+        }]);
         let subres = c.subscribe(subopts).await?;
         subres.any_failures()?;
 
         // Unsubscribe
-        c.unsubscribe(Unsubscribe::new(vec![
-            UnsubscribeTopic::new("test/unsub".to_owned()),
-            ])).await?;
+        c.unsubscribe(Unsubscribe::new(vec![UnsubscribeTopic::new(
+            "test/unsub".to_owned(),
+        )]))
+        .await?;
 
         // Publish
         let mut p = Publish::new("test/unsub".to_owned(), "x".as_bytes().to_vec());
@@ -213,9 +210,10 @@ fn retain() -> Result<()> {
         c.publish(&p).await?;
 
         // Subscribe
-        let subopts = Subscribe::new(vec![
-            SubscribeTopic { qos: QoS::AtMostOnce, topic_path: "test/retain".to_owned() }
-            ]);
+        let subopts = Subscribe::new(vec![SubscribeTopic {
+            qos: QoS::AtMostOnce,
+            topic_path: "test/retain".to_owned(),
+        }]);
         let subres = c.subscribe(subopts).await?;
         subres.any_failures()?;
 
@@ -233,8 +231,10 @@ fn tls_client() -> Result<Client> {
     let mut cc = rustls::ClientConfig::new();
     let cert_bytes = include_bytes!("certs/cacert.pem");
     let cert = rustls::internal::pemfile::certs(&mut Cursor::new(&cert_bytes[..]))
-        .map_err(|_| Error::from("Error parsing cert file"))?[0].clone();
-    cc.root_store.add(&cert)
+        .map_err(|_| Error::from("Error parsing cert file"))?[0]
+        .clone();
+    cc.root_store
+        .add(&cert)
         .map_err(|e| Error::from_std_err(e))?;
     Client::builder()
         .set_url_string("mqtts://localhost:8883")?
