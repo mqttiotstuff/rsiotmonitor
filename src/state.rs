@@ -1,3 +1,5 @@
+///! Memoize the iot states in database
+
 use sqlite::{self, Connection, ConnectionWithFullMutex, Result, State};
 
 #[allow(unused_imports)]

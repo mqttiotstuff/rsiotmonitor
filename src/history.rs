@@ -23,13 +23,13 @@ use std::convert::TryInto;
 use std::error::Error;
 
 /// Content of the value column
-struct TopicPayload<'a> {
-    topic: String,
-    payload: &'a [u8],
+pub struct TopicPayload<'a> {
+    pub topic: String,
+    pub payload: &'a [u8],
 }
 
 impl<'a> TopicPayload<'a> {
-    fn from_u8(key: &'a [u8]) -> TopicPayload<'a> {
+    pub fn from_u8(key: &'a [u8]) -> TopicPayload<'a> {
         let tb = key[0..2].try_into().unwrap();
         let topic_size: usize = u16::from_le_bytes(tb).try_into().unwrap();
         let topic: String = String::from_utf8(key[2..2 + topic_size].to_vec()).unwrap();
@@ -37,7 +37,7 @@ impl<'a> TopicPayload<'a> {
         TopicPayload { topic, payload }
     }
 
-    fn as_slice<T, F: Fn(&[u8]) -> Result<T, Box<dyn Error>>>(
+    pub fn as_slice<T, F: Fn(&[u8]) -> Result<T, Box<dyn Error>>>(
         &self,
         f: F,
     ) -> Result<T, Box<dyn Error>> {
@@ -62,7 +62,7 @@ impl fmt::Display for HistoryError {
 impl Error for HistoryError {}
 
 pub struct History {
-    database: Arc<Database>,
+    pub database: Arc<Database>,
 }
 
 impl History {
