@@ -24,6 +24,6 @@ This is new rust implementation of the iotmonitor project.
     [] application platform echosystem building
 
 
-## Build / install
+## Build / install using rust (instead of downloading the executable file)
 
     cargo install --git https://github.com/mqttiotstuff/rsiotmonitor rsiotmonitor
