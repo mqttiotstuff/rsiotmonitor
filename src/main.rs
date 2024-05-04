@@ -22,7 +22,9 @@ use structopt::StructOpt;
 
 use tokio::{net::TcpListener, time::Duration};
 
-use rsiotmonitor::{history::History, process::ProcessIterator, *};
+pub use rsiotmonitor::history::*;
+
+use rsiotmonitor::{process::ProcessIterator, *};
 use std::{error::Error as RustError, io, path::PathBuf, sync::Arc, time::SystemTime};
 use tokio_cron_scheduler::{Job, JobScheduler};
 
@@ -260,17 +262,6 @@ fn wrap_already_exists_processes(config: IOTMonitor) -> IOTMonitor {
                                 None => {}
                             }
                         }
-
-                        // match c.monitored_devices_mut().get_mut(&name) {
-                        //     Some(mi) => match &mut mi.associated_process_information {
-                        //         Some(api) => {
-                        //             api.pid = Some(p.pid);
-                        //             info!("{} attached with pid {}", &name, p.pid);
-                        //         }
-                        //         None => {}
-                        //     },
-                        //     None => {}
-                        // }
                     }
                 }
             }
@@ -709,8 +700,10 @@ async fn main() {
 
     debug!("Starting with config : {:?}\n", &config);
 
+    
+    let history_ref = (&config.history.clone().unwrap()).clone();
     let _http_server = tokio::task::spawn(async move {
-        httpserver::server_start(([0, 0, 0, 0], 3000)).await;
+        httpserver::server_start(([0, 0, 0, 0], 3000), &history_ref ).await;
     });
 
     start(config).await.unwrap();
