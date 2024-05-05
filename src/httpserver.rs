@@ -1,6 +1,5 @@
-#![feature(await_macro, async_await)]
-
-use actix_web::{App, HttpResponseBuilder, HttpServer};
+use actix_cors::Cors;
+use actix_web::{http, App, HttpResponseBuilder, HttpServer};
 // use http::{Request, Response};
 
 use arrow::error::ArrowError;
@@ -76,7 +75,6 @@ impl From<Box<dyn std::error::Error>> for HttpProcessingError {
     }
 }
 
-
 // Use default implementation for `error_response()` method
 impl error::ResponseError for HttpProcessingError {}
 
@@ -147,11 +145,20 @@ where
     };
 
     HttpServer::new(move || {
+        let cors = Cors::default()
+            .allowed_origin("*")
+            .allowed_origin_fn(|_origin, _req_head| true)
+            .allowed_methods(vec!["GET", "POST"])
+            .allowed_headers(vec![http::header::AUTHORIZATION, http::header::ACCEPT])
+            .allowed_header(http::header::CONTENT_TYPE)
+            .max_age(3600);
+
         let local_query: Data = query_endpoint.clone();
         App::new()
             .app_data(local_query)
             .wrap(middleware::DefaultHeaders::new().add(("X-Version", "0.2")))
             .wrap(middleware::Compress::default())
+            .wrap(cors)
             .wrap(middleware::Logger::default())
             .service(sql_query)
     })

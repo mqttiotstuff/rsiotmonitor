@@ -167,7 +167,7 @@ async fn test_description() {
     );
 
     // objects are defined with a name, categories
-    let o: Obj = Obj {
+    let o: BaseObj = BaseObj {
         name: "monobjet",
         tags: vec![],
         injected: vec![],

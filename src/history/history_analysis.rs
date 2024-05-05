@@ -5,6 +5,7 @@
 use std::any::Any;
 use std::fmt::{self, Debug, Formatter};
 use std::sync::Arc;
+use std::task::Poll;
 use std::time::Duration;
 
 use arrow::array::ArrayRef;
@@ -15,6 +16,7 @@ use datafusion::dataframe::DataFrame;
 use datafusion::datasource::{provider_as_source, TableProvider, TableType};
 use datafusion::error::Result;
 use datafusion::execution::context::{SessionState, TaskContext};
+use datafusion::execution::RecordBatchStream;
 use datafusion::physical_plan::memory::MemoryStream;
 use datafusion::physical_plan::{
     project_schema, DisplayAs, DisplayFormatType, ExecutionMode, ExecutionPlan, Partitioning,
@@ -24,6 +26,7 @@ use datafusion::prelude::*;
 use datafusion::sql::TableReference;
 use datafusion_expr::{Expr, LogicalPlanBuilder};
 use datafusion_physical_expr::EquivalenceProperties;
+use futures_core::Stream;
 
 use super::{History, TopicPayload};
 use async_trait::async_trait;
@@ -86,6 +89,129 @@ impl DisplayAs for CustomExec {
     }
 }
 
+pub struct LevelDBStream<'a> {
+    // the leveldb iterator
+    leveldb_iterator: leveldb::iterator::Iterator<'a>,
+    /// Schema representing the data
+    schema: SchemaRef,
+    projected_schema: Arc<Schema>,
+    // index on the datas
+    index: usize,
+    projection: Option<Vec<usize>>,
+    is_eof: bool,
+}
+
+impl<'a> LevelDBStream<'a> {
+    /// Create an iterator for a vector of record batches
+    pub fn try_new(
+        iterator: leveldb::iterator::Iterator<'a>,
+        schema: SchemaRef,
+        projected_schema: Arc<Schema>,
+        projection: Option<Vec<usize>>,
+    ) -> Result<Self> {
+        Ok(Self {
+            leveldb_iterator: iterator,
+            schema,
+            projected_schema,
+            index: 0,
+            projection,
+            is_eof: false,
+        })
+    }
+}
+
+impl<'a> Stream for LevelDBStream<'a> {
+    type Item = Result<RecordBatch>;
+
+    fn poll_next(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        Poll::Ready(if self.is_eof {
+            None
+        } else {
+            const MAX_PACKET_SIZE: usize = 1000; // packet
+
+            let mut all_topics = StringBuilder::with_capacity(10_000, MAX_PACKET_SIZE);
+            let mut all_timestamps = Int64Builder::with_capacity(MAX_PACKET_SIZE);
+            let mut all_year = Int32Builder::with_capacity(MAX_PACKET_SIZE);
+            let mut all_month = Int32Builder::with_capacity(MAX_PACKET_SIZE);
+            let mut all_days = Int32Builder::with_capacity(MAX_PACKET_SIZE);
+            let mut all_payloads = BinaryBuilder::with_capacity(10_000, MAX_PACKET_SIZE);
+
+            let mut row = self.leveldb_iterator.next();
+
+            while row.is_some() {
+                self.index += 1;
+                let mut cpt = 1;
+                while row.is_some() && cpt % MAX_PACKET_SIZE != 0 {
+                    if let Some(a) = row.as_ref() {
+                        use chrono::Datelike;
+                        use leveldb::database::util::*;
+
+                        let timestamp = i64::from_u8(&a.0);
+
+                        let tp = TopicPayload::from_u8(&a.1);
+                        let topic = tp.topic;
+                        let payload = tp.payload;
+
+                        all_topics.append_value(topic);
+                        let b = payload.to_vec();
+                        all_payloads.append_value(b);
+
+                        let tbytes = timestamp;
+                        all_timestamps.append_value(tbytes);
+
+                        // year, month, day
+                        let naive =
+                            chrono::NaiveDateTime::from_timestamp_opt(timestamp / 1_000_000, 0)
+                                .unwrap();
+                        let date = naive.date();
+                        let year: i32 = date.year();
+                        all_year.append_value(year);
+                        let month: i32 = date.month().try_into().unwrap();
+                        all_month.append_value(month);
+
+                        let day: i32 = date.day().try_into().unwrap();
+                        all_days.append_value(day);
+                    }
+
+                    cpt += 1;
+                    row = self.leveldb_iterator.next();
+                }
+            } // while
+
+            let mut result: Vec<ArrayRef> = Vec::new();
+            for f in self.projected_schema.fields().iter() {
+                if f.name() == "topic" {
+                    result.push(Arc::new(all_topics.finish()));
+                } else if f.name() == "timestamp" {
+                    result.push(Arc::new(all_timestamps.finish()));
+                } else if f.name() == "year" {
+                    result.push(Arc::new(all_year.finish()));
+                } else if f.name() == "month" {
+                    result.push(Arc::new(all_month.finish()));
+                } else if f.name() == "day" {
+                    result.push(Arc::new(all_days.finish()));
+                } else if f.name() == "payload" {
+                    result.push(Arc::new(all_payloads.finish()));
+                }
+            }
+
+            let batch = RecordBatch::try_new(self.projected_schema.clone(), result)?;
+
+            Some(Ok(batch))
+        })
+    }
+}
+
+impl<'a> RecordBatchStream for LevelDBStream<'a> {
+    /// Get the schema
+    fn schema(&self) -> SchemaRef {
+        self.schema.clone()
+    }
+}
+
 impl ExecutionPlan for CustomExec {
     fn name(&self) -> &'static str {
         "CustomExec"
@@ -117,6 +243,7 @@ impl ExecutionPlan for CustomExec {
     ) -> Result<SendableRecordBatchStream> {
         use leveldb::iterator::*;
         use leveldb::options::ReadOptions;
+
         let mut it = self.db.inner.database.iter(&ReadOptions::new());
 
         const MAX_PACKET_SIZE: usize = 10_000;
@@ -129,8 +256,6 @@ impl ExecutionPlan for CustomExec {
         let mut all_payloads = BinaryBuilder::with_capacity(10_000, MAX_PACKET_SIZE);
 
         let mut row = it.next();
-
-        let mut last: Option<i64> = None;
 
         while row.is_some() {
             let mut cpt = 1;
@@ -170,38 +295,25 @@ impl ExecutionPlan for CustomExec {
             }
         }
 
-        let mut result : Vec<ArrayRef> = Vec::new();
+        let mut result: Vec<ArrayRef> = Vec::new();
         for f in self.projected_schema.fields().iter() {
             if f.name() == "topic" {
                 result.push(Arc::new(all_topics.finish()));
             } else if f.name() == "timestamp" {
-                result.push(  Arc::new(all_timestamps.finish()));
+                result.push(Arc::new(all_timestamps.finish()));
             } else if f.name() == "year" {
-                result.push(  Arc::new(all_year.finish()));
-            }
-            else if f.name() == "month" {
+                result.push(Arc::new(all_year.finish()));
+            } else if f.name() == "month" {
                 result.push(Arc::new(all_month.finish()));
-            }else if f.name() == "day" {
+            } else if f.name() == "day" {
                 result.push(Arc::new(all_days.finish()));
-            }else if f.name() == "payload" {
+            } else if f.name() == "payload" {
                 result.push(Arc::new(all_payloads.finish()));
             }
         }
 
         Ok(Box::pin(MemoryStream::try_new(
-            vec![RecordBatch::try_new(
-                self.projected_schema.clone(),
-                result
-              /*  vec![
-                    Arc::new(all_topics.finish()),
-                    Arc::new(all_timestamps.finish()),
-                    Arc::new(all_year.finish()),
-                    Arc::new(all_month.finish()),
-                    Arc::new(all_days.finish()),
-                    Arc::new(all_payloads.finish()),
-                ],
-                 */
-            )?],
+            vec![RecordBatch::try_new(self.projected_schema.clone(), result)?],
             self.schema(),
             None,
         )?))

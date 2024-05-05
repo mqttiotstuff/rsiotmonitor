@@ -36,6 +36,8 @@ derivative = "2.2.0"
 mqtt-v5-broker = { path = "deps/mqtt-broker/mqtt-v5-broker" }
 
 actix-web = "4"
+actix-cors = "0.7"
+
 serde = {}
 serde_json = {}
 derive_more = "0.99.17"
