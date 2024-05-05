@@ -4,6 +4,8 @@
 
 use std::any::Any;
 use std::fmt::{self, Debug, Formatter};
+use std::marker::PhantomData;
+use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 use std::task::Poll;
 use std::time::Duration;
@@ -17,6 +19,7 @@ use datafusion::datasource::{provider_as_source, TableProvider, TableType};
 use datafusion::error::Result;
 use datafusion::execution::context::{SessionState, TaskContext};
 use datafusion::execution::RecordBatchStream;
+use datafusion::parquet::file::serialized_reader::ReadOptions;
 use datafusion::physical_plan::memory::MemoryStream;
 use datafusion::physical_plan::{
     project_schema, DisplayAs, DisplayFormatType, ExecutionMode, ExecutionPlan, Partitioning,
@@ -27,6 +30,8 @@ use datafusion::sql::TableReference;
 use datafusion_expr::{Expr, LogicalPlanBuilder};
 use datafusion_physical_expr::EquivalenceProperties;
 use futures_core::Stream;
+use leveldb::db::Database;
+use leveldb::iterator::LevelDBIterator;
 
 use super::{History, TopicPayload};
 use async_trait::async_trait;
@@ -39,7 +44,7 @@ pub struct CustomDataSource {
 }
 
 impl Debug for CustomDataSource {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
         f.write_str("custom_db")
     }
 }
@@ -52,6 +57,7 @@ impl CustomDataSource {
     ) -> Result<Arc<dyn ExecutionPlan>> {
         Ok(Arc::new(CustomExec::new(projections, schema, self.clone())))
     }
+
 }
 
 #[derive(Debug, Clone)]
@@ -89,38 +95,44 @@ impl DisplayAs for CustomExec {
     }
 }
 
-pub struct LevelDBStream<'a> {
+pub struct LevelDBStream {
     // the leveldb iterator
-    leveldb_iterator: leveldb::iterator::Iterator<'a>,
+    database: Arc<Database>,
     /// Schema representing the data
     schema: SchemaRef,
     projected_schema: Arc<Schema>,
     // index on the datas
     index: usize,
+    
     projection: Option<Vec<usize>>,
+
     is_eof: bool,
 }
 
-impl<'a> LevelDBStream<'a> {
+impl LevelDBStream {
     /// Create an iterator for a vector of record batches
-    pub fn try_new(
-        iterator: leveldb::iterator::Iterator<'a>,
+    fn try_new(
+        database: Arc<Database>,
         schema: SchemaRef,
         projected_schema: Arc<Schema>,
         projection: Option<Vec<usize>>,
-    ) -> Result<Self> {
-        Ok(Self {
-            leveldb_iterator: iterator,
+    ) -> Result<LevelDBStream> {
+        use leveldb::iterator::Iterable;
+
+        let returned_instant = Self {
+            database: database.clone(),
             schema,
             projected_schema,
             index: 0,
             projection,
             is_eof: false,
-        })
+        };
+
+        Ok(returned_instant)
     }
 }
 
-impl<'a> Stream for LevelDBStream<'a> {
+impl Stream for LevelDBStream {
     type Item = Result<RecordBatch>;
 
     fn poll_next(
@@ -130,6 +142,17 @@ impl<'a> Stream for LevelDBStream<'a> {
         Poll::Ready(if self.is_eof {
             None
         } else {
+
+            let Self {
+                mut is_eof,
+                mut index,
+                database,
+                schema,
+                projected_schema,
+                projection
+                
+            } = self.deref_mut();
+
             const MAX_PACKET_SIZE: usize = 1000; // packet
 
             let mut all_topics = StringBuilder::with_capacity(10_000, MAX_PACKET_SIZE);
@@ -139,12 +162,20 @@ impl<'a> Stream for LevelDBStream<'a> {
             let mut all_days = Int32Builder::with_capacity(MAX_PACKET_SIZE);
             let mut all_payloads = BinaryBuilder::with_capacity(10_000, MAX_PACKET_SIZE);
 
-            let mut row = self.leveldb_iterator.next();
+            use leveldb::iterator::Iterable;
+
+            let mut it: leveldb::iterator::Iterator =
+                database.iter(&leveldb::options::ReadOptions::new());
+            
+            let mut skipped_iterator = it.skip(index);
+
+            let mut row = skipped_iterator.next();
 
             while row.is_some() {
-                self.index += 1;
+               
                 let mut cpt = 1;
                 while row.is_some() && cpt % MAX_PACKET_SIZE != 0 {
+                    index += 1;
                     if let Some(a) = row.as_ref() {
                         use chrono::Datelike;
                         use leveldb::database::util::*;
@@ -177,9 +208,14 @@ impl<'a> Stream for LevelDBStream<'a> {
                     }
 
                     cpt += 1;
-                    row = self.leveldb_iterator.next();
+                    row = skipped_iterator.next();
+                } // while
+
+                if row.is_none() {
+                    // reach the end of iterator
+                    is_eof = true;
                 }
-            } // while
+            }
 
             let mut result: Vec<ArrayRef> = Vec::new();
             for f in self.projected_schema.fields().iter() {
@@ -205,7 +241,7 @@ impl<'a> Stream for LevelDBStream<'a> {
     }
 }
 
-impl<'a> RecordBatchStream for LevelDBStream<'a> {
+impl RecordBatchStream for LevelDBStream {
     /// Get the schema
     fn schema(&self) -> SchemaRef {
         self.schema.clone()
@@ -244,79 +280,83 @@ impl ExecutionPlan for CustomExec {
         use leveldb::iterator::*;
         use leveldb::options::ReadOptions;
 
-        let mut it = self.db.inner.database.iter(&ReadOptions::new());
+        // const MAX_PACKET_SIZE: usize = 10_000;
 
-        const MAX_PACKET_SIZE: usize = 10_000;
+        // let mut all_topics = StringBuilder::with_capacity(10_000, MAX_PACKET_SIZE);
+        // let mut all_timestamps = Int64Builder::with_capacity(MAX_PACKET_SIZE);
+        // let mut all_year = Int32Builder::with_capacity(MAX_PACKET_SIZE);
+        // let mut all_month = Int32Builder::with_capacity(MAX_PACKET_SIZE);
+        // let mut all_days = Int32Builder::with_capacity(MAX_PACKET_SIZE);
+        // let mut all_payloads = BinaryBuilder::with_capacity(10_000, MAX_PACKET_SIZE);
 
-        let mut all_topics = StringBuilder::with_capacity(10_000, MAX_PACKET_SIZE);
-        let mut all_timestamps = Int64Builder::with_capacity(MAX_PACKET_SIZE);
-        let mut all_year = Int32Builder::with_capacity(MAX_PACKET_SIZE);
-        let mut all_month = Int32Builder::with_capacity(MAX_PACKET_SIZE);
-        let mut all_days = Int32Builder::with_capacity(MAX_PACKET_SIZE);
-        let mut all_payloads = BinaryBuilder::with_capacity(10_000, MAX_PACKET_SIZE);
+        // let mut row = it.next();
 
-        let mut row = it.next();
+        // while row.is_some() {
+        //     let mut cpt = 1;
+        //     while row.is_some() && cpt % MAX_PACKET_SIZE != 0 {
+        //         if let Some(a) = row.as_ref() {
+        //             use chrono::Datelike;
+        //             use leveldb::database::util::*;
 
-        while row.is_some() {
-            let mut cpt = 1;
-            while row.is_some() && cpt % MAX_PACKET_SIZE != 0 {
-                if let Some(a) = row.as_ref() {
-                    use chrono::Datelike;
-                    use leveldb::database::util::*;
+        //             let timestamp = i64::from_u8(&a.0);
 
-                    let timestamp = i64::from_u8(&a.0);
+        //             let tp = TopicPayload::from_u8(&a.1);
+        //             let topic = tp.topic;
+        //             let payload = tp.payload;
 
-                    let tp = TopicPayload::from_u8(&a.1);
-                    let topic = tp.topic;
-                    let payload = tp.payload;
+        //             all_topics.append_value(topic);
+        //             let b = payload.to_vec();
+        //             all_payloads.append_value(b);
 
-                    all_topics.append_value(topic);
-                    let b = payload.to_vec();
-                    all_payloads.append_value(b);
+        //             let tbytes = timestamp;
+        //             all_timestamps.append_value(tbytes);
 
-                    let tbytes = timestamp;
-                    all_timestamps.append_value(tbytes);
+        //             // year, month, day
+        //             let naive = chrono::NaiveDateTime::from_timestamp_opt(timestamp / 1_000_000, 0)
+        //                 .unwrap();
+        //             let date = naive.date();
+        //             let year: i32 = date.year();
+        //             all_year.append_value(year);
+        //             let month: i32 = date.month().try_into().unwrap();
+        //             all_month.append_value(month);
 
-                    // year, month, day
-                    let naive = chrono::NaiveDateTime::from_timestamp_opt(timestamp / 1_000_000, 0)
-                        .unwrap();
-                    let date = naive.date();
-                    let year: i32 = date.year();
-                    all_year.append_value(year);
-                    let month: i32 = date.month().try_into().unwrap();
-                    all_month.append_value(month);
+        //             let day: i32 = date.day().try_into().unwrap();
+        //             all_days.append_value(day);
+        //         }
 
-                    let day: i32 = date.day().try_into().unwrap();
-                    all_days.append_value(day);
-                }
+        //         cpt += 1;
+        //         row = it.next();
+        //     }
+        // }
 
-                cpt += 1;
-                row = it.next();
-            }
-        }
+        // let mut result: Vec<ArrayRef> = Vec::new();
+        // for f in self.projected_schema.fields().iter() {
+        //     if f.name() == "topic" {
+        //         result.push(Arc::new(all_topics.finish()));
+        //     } else if f.name() == "timestamp" {
+        //         result.push(Arc::new(all_timestamps.finish()));
+        //     } else if f.name() == "year" {
+        //         result.push(Arc::new(all_year.finish()));
+        //     } else if f.name() == "month" {
+        //         result.push(Arc::new(all_month.finish()));
+        //     } else if f.name() == "day" {
+        //         result.push(Arc::new(all_days.finish()));
+        //     } else if f.name() == "payload" {
+        //         result.push(Arc::new(all_payloads.finish()));
+        //     }
+        // }
 
-        let mut result: Vec<ArrayRef> = Vec::new();
-        for f in self.projected_schema.fields().iter() {
-            if f.name() == "topic" {
-                result.push(Arc::new(all_topics.finish()));
-            } else if f.name() == "timestamp" {
-                result.push(Arc::new(all_timestamps.finish()));
-            } else if f.name() == "year" {
-                result.push(Arc::new(all_year.finish()));
-            } else if f.name() == "month" {
-                result.push(Arc::new(all_month.finish()));
-            } else if f.name() == "day" {
-                result.push(Arc::new(all_days.finish()));
-            } else if f.name() == "payload" {
-                result.push(Arc::new(all_payloads.finish()));
-            }
-        }
+        // Ok(Box::pin(MemoryStream::try_new(
+        //     vec![RecordBatch::try_new(self.projected_schema.clone(), result)?],
+        //     self.schema(),
+        //     None,
+        // )?))
 
-        Ok(Box::pin(MemoryStream::try_new(
-            vec![RecordBatch::try_new(self.projected_schema.clone(), result)?],
-            self.schema(),
-            None,
-        )?))
+        let dr = self.db.inner.database.clone();
+        let lstream =
+            LevelDBStream::try_new(dr, self.schema(), self.projected_schema.clone(), None)?;
+
+        Ok(Box::pin(lstream))
     }
 }
 

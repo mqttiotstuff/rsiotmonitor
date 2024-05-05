@@ -1,5 +1,6 @@
 
 
+use std::marker::PhantomData;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -159,7 +160,7 @@ impl History {
         // writing rows count ..
         let mut cpt: u128;
 
-        let mut it = self.database.iter(&ReadOptions::new());
+        let mut it = Box::new(self.database.iter(&ReadOptions::new()));
 
         let mut row = it.next();
 
