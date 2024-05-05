@@ -95,19 +95,10 @@ struct Data {
     pub history_db: Arc<History>,
 }
 
-// usage example :
-// http://localhost:3000/sql/select%20year,month,day,topic,timestamp%20from%20history%20where%20topic%20=%20'home%2fesp13%2factuators%2fledstrip';
-
 fn stream_recordbatch<S: Stream<Item = Result<RecordBatch, DataFusionError>>>(
     input: S,
 ) -> impl Stream<Item = Result<Bytes, actix_web::Error>> {
     stream! {
-
-
-
-
-
-
                for await value in input {
 
                    yield match value {
@@ -115,17 +106,34 @@ fn stream_recordbatch<S: Stream<Item = Result<RecordBatch, DataFusionError>>>(
                            let mut buf = BufWriter::new(Vec::new());
                            let mut writer = arrow::json::LineDelimitedWriter::new(&mut buf);
 
-                           writer.write(&r);
-                           writer.finish();
+                           match writer.write(&r) {
+                                Err(e) => {
+                                    let msg = format!("erreur in fetching : {}", e);
+                                    let new_error = HttpProcessingError {  name: msg.into()};
+                                    Err(new_error.into())
+                                }
+                                Ok (_) => {
+                                    match  writer.finish() {
+                                        Err(e) => {
+                                            let msg = format!("erreur in fetching : {}", e);
+                                            let new_error = HttpProcessingError {  name: msg.into()};
+                                            Err(new_error.into())
+                                        } 
+                                        Ok(_) => {
+                                            match buf.into_inner() {
+                                                Ok(b) => {
+                                                  Ok(Bytes::from(b))
+                                                }
+                                                Err(e) => {
+                                                     let msg = format!("erreur in fetching : {}", e);
+                                                     let new_error = HttpProcessingError {  name: msg.into()};
+                                                     Err(new_error.into())
+                                                }
+                                            }
+                                        }
+                                    }
 
-                           match buf.into_inner() {
-                               Ok(b) => {
-                                 Ok(Bytes::from(b))
-                               }
-                               Err(e) => {
-    let new_error = HttpProcessingError {  name: "error in fetching".into()};
-                           Err(new_error.into())
-                               }
+                                }
                            }
                        }
                        Err(_e) => {
@@ -141,6 +149,10 @@ fn stream_recordbatch<S: Stream<Item = Result<RecordBatch, DataFusionError>>>(
 
        }
 }
+
+
+// usage example :
+// http://localhost:3000/sql/select%20year,month,day,topic,timestamp%20from%20history%20where%20topic%20=%20'home%2fesp13%2factuators%2fledstrip';
 
 #[get("sql/{sql}")]
 async fn sql_query(
@@ -166,26 +178,6 @@ async fn sql_query(
 
     let dfcontent = df.execute_stream().await?;
     let stream = stream_recordbatch(dfcontent);
-
-    // log::debug!("collect elements");
-    // let record_batches = df.collect().await?;
-
-    // log::debug!("result received");
-
-    // // Write the record batch out as JSON
-    // let mut buf = BufWriter::new(Vec::new());
-    // {
-    //     let mut writer = arrow::json::LineDelimitedWriter::new(&mut buf);
-    //     let refs: Vec<&RecordBatch> = record_batches.iter().collect();
-    //     writer.write_batches(&refs)?;
-    //     writer.finish()?;
-    // }
-
-    // log::debug!("converted");
-
-    // let stream = SQLResponseStream {
-
-    // }
 
     let response = HttpResponseBuilder::new(StatusCode::OK)
         .append_header(ContentType::json())
