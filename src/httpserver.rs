@@ -1,22 +1,18 @@
 use actix_cors::Cors;
 use actix_web::{
-    http::{self, Error},
+    http::{self, header::Header, Error},
     web::Bytes,
     App, HttpResponseBuilder, HttpServer,
 };
 // use http::{Request, Response};
 
-use arrow::error::ArrowError;
+use arrow::{buffer::Buffer, error::ArrowError, json::writer::LineDelimited};
 use async_stream::stream;
 use futures_core::{Future, Stream};
 use futures_util::TryStreamExt;
 
 use std::{
-    io::{BufWriter, IntoInnerError},
-    net::{IpAddr, SocketAddr},
-    pin::Pin,
-    sync::Arc,
-    task::{Context, Poll},
+    io::{BufWriter, IntoInnerError}, net::{IpAddr, SocketAddr}, pin::Pin, process::Output, sync::Arc, task::{Context, Poll}
 };
 
 use crate::history::{create_session, History};
@@ -96,60 +92,45 @@ struct Data {
 }
 
 fn stream_recordbatch<S: Stream<Item = Result<RecordBatch, DataFusionError>>>(
-    input: S,
+    input: S, 
 ) -> impl Stream<Item = Result<Bytes, actix_web::Error>> {
     stream! {
-               for await value in input {
+            for await value in input {
 
-                   yield match value {
-                       Ok(r) => {
-                           let mut buf = BufWriter::new(Vec::new());
-                           let mut writer = arrow::json::LineDelimitedWriter::new(&mut buf);
+                yield match value {
+                    Ok(r) => {
+                        let buf = BufWriter::new(Vec::new());
+                        let mut writer = arrow::csv::Writer::new(buf);
 
-                           match writer.write(&r) {
-                                Err(e) => {
-                                    let msg = format!("erreur in fetching : {}", e);
-                                    let new_error = HttpProcessingError {  name: msg.into()};
-                                    Err(new_error.into())
-                                }
-                                Ok (_) => {
-                                    match  writer.finish() {
-                                        Err(e) => {
-                                            let msg = format!("erreur in fetching : {}", e);
-                                            let new_error = HttpProcessingError {  name: msg.into()};
-                                            Err(new_error.into())
-                                        } 
-                                        Ok(_) => {
-                                            match buf.into_inner() {
-                                                Ok(b) => {
-                                                  Ok(Bytes::from(b))
-                                                }
-                                                Err(e) => {
-                                                     let msg = format!("erreur in fetching : {}", e);
-                                                     let new_error = HttpProcessingError {  name: msg.into()};
-                                                     Err(new_error.into())
-                                                }
-                                            }
-                                        }
+                        match writer.write(&r) {
+                             Err(e) => {
+                                 let msg = format!("erreur in fetching : {}", e);
+                                 let new_error = HttpProcessingError { name: msg.into()};
+                                 Err(new_error.into())
+                             }
+                             Ok (_) => {
+                                match writer.into_inner().into_inner() { // this flush
+                                    Ok(b) => {
+                                    Ok(Bytes::from(b))
                                     }
-
+                                    Err(e) => {
+                                        let msg = format!("erreur in fetching : {}", e);
+                                        let new_error = HttpProcessingError {  name: msg.into()};
+                                        Err(new_error.into())
+                                    }
                                 }
-                           }
-                       }
-                       Err(_e) => {
-                           let new_error = HttpProcessingError {  name: "error in fetching".into()};
-                           Err(new_error.into())
-                       }
-                   }
+                             }
+                        }
+                    }
+                    Err(_e) => {
+                        let new_error = HttpProcessingError {  name: "error in fetching".into()};
+                        Err(new_error.into())
+                    }
+                }
+            }
 
-               }
-
-
-
-
-       }
+    }
 }
-
 
 // usage example :
 // http://localhost:3000/sql/select%20year,month,day,topic,timestamp%20from%20history%20where%20topic%20=%20'home%2fesp13%2factuators%2fledstrip';
@@ -180,7 +161,7 @@ async fn sql_query(
     let stream = stream_recordbatch(dfcontent);
 
     let response = HttpResponseBuilder::new(StatusCode::OK)
-        .append_header(ContentType::json())
+        .append_header(("Content-Type","text/csv"))
         .streaming(stream);
 
     return Ok(response);
