@@ -31,11 +31,10 @@ use datafusion_expr::{Expr, LogicalPlanBuilder};
 use datafusion_physical_expr::EquivalenceProperties;
 use futures_core::Stream;
 use leveldb::db::Database;
-use leveldb::iterator::LevelDBIterator;
+use tokio::time::timeout;
 
 use super::{History, TopicPayload};
 use async_trait::async_trait;
-use tokio::time::timeout;
 
 /// A custom datasource, used to represent a datastore with a single index
 #[derive(Clone)]
@@ -57,7 +56,6 @@ impl CustomDataSource {
     ) -> Result<Arc<dyn ExecutionPlan>> {
         Ok(Arc::new(CustomExec::new(projections, schema, self.clone())))
     }
-
 }
 
 #[derive(Debug, Clone)]
@@ -103,9 +101,9 @@ pub struct LevelDBStream {
     projected_schema: Arc<Schema>,
     // index on the datas
     index: usize,
-    
+    // projected columns, used by datafusion to filter elements
     projection: Option<Vec<usize>>,
-
+    // is the stream at eof ?
     is_eof: bool,
 }
 
@@ -140,85 +138,78 @@ impl Stream for LevelDBStream {
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Self::Item>> {
         Poll::Ready(if self.is_eof {
+            log::info!("reach end");
             None
         } else {
+            let mutself = self.deref_mut();
 
-            let Self {
-                mut is_eof,
-                mut index,
-                database,
-                schema,
-                projected_schema,
-                projection
-                
-            } = self.deref_mut();
+            const MAX_PACKET_SIZE: usize = 100_000; // packet
 
-            const MAX_PACKET_SIZE: usize = 1000; // packet
-
-            let mut all_topics = StringBuilder::with_capacity(10_000, MAX_PACKET_SIZE);
+            let mut all_topics = StringBuilder::with_capacity( MAX_PACKET_SIZE, MAX_PACKET_SIZE * 50);
             let mut all_timestamps = Int64Builder::with_capacity(MAX_PACKET_SIZE);
             let mut all_year = Int32Builder::with_capacity(MAX_PACKET_SIZE);
             let mut all_month = Int32Builder::with_capacity(MAX_PACKET_SIZE);
             let mut all_days = Int32Builder::with_capacity(MAX_PACKET_SIZE);
-            let mut all_payloads = BinaryBuilder::with_capacity(10_000, MAX_PACKET_SIZE);
+            let mut all_payloads = BinaryBuilder::with_capacity(MAX_PACKET_SIZE, MAX_PACKET_SIZE * 1000);
 
             use leveldb::iterator::Iterable;
 
-            let mut it: leveldb::iterator::Iterator =
-                database.iter(&leveldb::options::ReadOptions::new());
+            log::info!("open cursor for index {}", &mutself.index);
+            let it: leveldb::iterator::Iterator =
+            mutself.database.iter(&leveldb::options::ReadOptions::new());
+
             
-            let mut skipped_iterator = it.skip(index);
+            let mut skipped_iterator = it.skip(mutself.index);
 
             let mut row = skipped_iterator.next();
 
-            while row.is_some() {
-               
-                let mut cpt = 1;
-                while row.is_some() && cpt % MAX_PACKET_SIZE != 0 {
-                    index += 1;
-                    if let Some(a) = row.as_ref() {
-                        use chrono::Datelike;
-                        use leveldb::database::util::*;
+            // while row.is_some() {
+            let mut cpt = 1;
 
-                        let timestamp = i64::from_u8(&a.0);
+            while row.is_some() && cpt % MAX_PACKET_SIZE != 0 {
+                mutself.index += 1;
+                if let Some(a) = row.as_ref() {
+                    use chrono::Datelike;
+                    use leveldb::database::util::*;
 
-                        let tp = TopicPayload::from_u8(&a.1);
-                        let topic = tp.topic;
-                        let payload = tp.payload;
+                    let timestamp = i64::from_u8(&a.0);
 
-                        all_topics.append_value(topic);
-                        let b = payload.to_vec();
-                        all_payloads.append_value(b);
+                    let tp = TopicPayload::from_u8(&a.1);
+                    let topic = tp.topic;
+                    let payload = tp.payload;
 
-                        let tbytes = timestamp;
-                        all_timestamps.append_value(tbytes);
+                    all_topics.append_value(topic);
+                    let b = payload.to_vec();
+                    all_payloads.append_value(b);
 
-                        // year, month, day
-                        let naive =
-                            chrono::NaiveDateTime::from_timestamp_opt(timestamp / 1_000_000, 0)
-                                .unwrap();
-                        let date = naive.date();
-                        let year: i32 = date.year();
-                        all_year.append_value(year);
-                        let month: i32 = date.month().try_into().unwrap();
-                        all_month.append_value(month);
+                    let tbytes = timestamp;
+                    all_timestamps.append_value(tbytes);
 
-                        let day: i32 = date.day().try_into().unwrap();
-                        all_days.append_value(day);
-                    }
+                    // year, month, day
+                    let naive = chrono::NaiveDateTime::from_timestamp_opt(timestamp / 1_000_000, 0)
+                        .unwrap();
+                    let date = naive.date();
+                    let year: i32 = date.year();
+                    all_year.append_value(year);
+                    let month: i32 = date.month().try_into().unwrap();
+                    all_month.append_value(month);
 
-                    cpt += 1;
-                    row = skipped_iterator.next();
-                } // while
-
-                if row.is_none() {
-                    // reach the end of iterator
-                    is_eof = true;
+                    let day: i32 = date.day().try_into().unwrap();
+                    all_days.append_value(day);
                 }
+
+                cpt += 1;
+                row = skipped_iterator.next();
+            } // while
+
+            if row.is_none() {
+                // reach the end of iterator
+                mutself.is_eof = true;
             }
+            // }
 
             let mut result: Vec<ArrayRef> = Vec::new();
-            for f in self.projected_schema.fields().iter() {
+            for f in mutself.projected_schema.fields().iter() {
                 if f.name() == "topic" {
                     result.push(Arc::new(all_topics.finish()));
                 } else if f.name() == "timestamp" {
@@ -234,7 +225,7 @@ impl Stream for LevelDBStream {
                 }
             }
 
-            let batch = RecordBatch::try_new(self.projected_schema.clone(), result)?;
+            let batch = RecordBatch::try_new(mutself.projected_schema.clone(), result)?;
 
             Some(Ok(batch))
         })
@@ -277,81 +268,6 @@ impl ExecutionPlan for CustomExec {
         _partition: usize,
         _context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
-        use leveldb::iterator::*;
-        use leveldb::options::ReadOptions;
-
-        // const MAX_PACKET_SIZE: usize = 10_000;
-
-        // let mut all_topics = StringBuilder::with_capacity(10_000, MAX_PACKET_SIZE);
-        // let mut all_timestamps = Int64Builder::with_capacity(MAX_PACKET_SIZE);
-        // let mut all_year = Int32Builder::with_capacity(MAX_PACKET_SIZE);
-        // let mut all_month = Int32Builder::with_capacity(MAX_PACKET_SIZE);
-        // let mut all_days = Int32Builder::with_capacity(MAX_PACKET_SIZE);
-        // let mut all_payloads = BinaryBuilder::with_capacity(10_000, MAX_PACKET_SIZE);
-
-        // let mut row = it.next();
-
-        // while row.is_some() {
-        //     let mut cpt = 1;
-        //     while row.is_some() && cpt % MAX_PACKET_SIZE != 0 {
-        //         if let Some(a) = row.as_ref() {
-        //             use chrono::Datelike;
-        //             use leveldb::database::util::*;
-
-        //             let timestamp = i64::from_u8(&a.0);
-
-        //             let tp = TopicPayload::from_u8(&a.1);
-        //             let topic = tp.topic;
-        //             let payload = tp.payload;
-
-        //             all_topics.append_value(topic);
-        //             let b = payload.to_vec();
-        //             all_payloads.append_value(b);
-
-        //             let tbytes = timestamp;
-        //             all_timestamps.append_value(tbytes);
-
-        //             // year, month, day
-        //             let naive = chrono::NaiveDateTime::from_timestamp_opt(timestamp / 1_000_000, 0)
-        //                 .unwrap();
-        //             let date = naive.date();
-        //             let year: i32 = date.year();
-        //             all_year.append_value(year);
-        //             let month: i32 = date.month().try_into().unwrap();
-        //             all_month.append_value(month);
-
-        //             let day: i32 = date.day().try_into().unwrap();
-        //             all_days.append_value(day);
-        //         }
-
-        //         cpt += 1;
-        //         row = it.next();
-        //     }
-        // }
-
-        // let mut result: Vec<ArrayRef> = Vec::new();
-        // for f in self.projected_schema.fields().iter() {
-        //     if f.name() == "topic" {
-        //         result.push(Arc::new(all_topics.finish()));
-        //     } else if f.name() == "timestamp" {
-        //         result.push(Arc::new(all_timestamps.finish()));
-        //     } else if f.name() == "year" {
-        //         result.push(Arc::new(all_year.finish()));
-        //     } else if f.name() == "month" {
-        //         result.push(Arc::new(all_month.finish()));
-        //     } else if f.name() == "day" {
-        //         result.push(Arc::new(all_days.finish()));
-        //     } else if f.name() == "payload" {
-        //         result.push(Arc::new(all_payloads.finish()));
-        //     }
-        // }
-
-        // Ok(Box::pin(MemoryStream::try_new(
-        //     vec![RecordBatch::try_new(self.projected_schema.clone(), result)?],
-        //     self.schema(),
-        //     None,
-        // )?))
-
         let dr = self.db.inner.database.clone();
         let lstream =
             LevelDBStream::try_new(dr, self.schema(), self.projected_schema.clone(), None)?;
@@ -432,7 +348,6 @@ pub async fn create_session(
                 Field::new("timestamp", DataType::Int64, false),
                 Field::new("payload", DataType::Binary, false),
             ])),
-
             ..Default::default()
         },
     )

@@ -57,7 +57,7 @@ impl Default for MqttConfig {
             username: None,
             password: None,
             url: "".into(),
-            base_topic: "iotmonitor/monitoring".into(),
+            base_topic: "iotmonitor/monitoring".into(), // default
             client_id: None,
             tls_server_ca_file: None,
             tls_mozilla_root_cas: false,

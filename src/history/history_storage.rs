@@ -96,6 +96,7 @@ impl History {
         }))
     }
 
+    // store an event to levedb database
     pub fn store_event(&self, topic: String, payload: &[u8]) -> Result<(), Box<dyn Error>> {
         let instant = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
