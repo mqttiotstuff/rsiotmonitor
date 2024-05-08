@@ -99,12 +99,15 @@ fn stream_recordbatch<S: Stream<Item = Result<RecordBatch, DataFusionError>>>(
     input: S,
 ) -> impl Stream<Item = Result<Bytes, actix_web::Error>> {
     stream! {
+            let mut first = true;  // for headers
             for await value in input {
 
                 yield match value {
                     Ok(r) => {
                         let buf = BufWriter::new(Vec::new());
-                        let mut writer = arrow::csv::Writer::new(buf);
+                        //WriterBuilder::
+                        let mut writer = arrow::csv::WriterBuilder::new().with_header(first).build(buf);
+                        first = false;
 
                         match writer.write(&r) {
                              Err(e) => {
