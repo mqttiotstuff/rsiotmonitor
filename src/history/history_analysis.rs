@@ -14,15 +14,17 @@ use arrow::array::ArrayRef;
 use datafusion::arrow::array::{BinaryBuilder, Int32Builder, Int64Builder, StringBuilder};
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::arrow::record_batch::RecordBatch;
+use datafusion::catalog::Session;
 use datafusion::dataframe::DataFrame;
 use datafusion::datasource::{provider_as_source, TableProvider, TableType};
 use datafusion::error::Result;
 use datafusion::execution::context::{SessionState, TaskContext};
 use datafusion::execution::RecordBatchStream;
 use datafusion::parquet::file::serialized_reader::ReadOptions;
+use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::memory::MemoryStream;
 use datafusion::physical_plan::{
-    project_schema, DisplayAs, DisplayFormatType, ExecutionMode, ExecutionPlan, Partitioning,
+    project_schema, DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning,
     PlanProperties, SendableRecordBatchStream,
 };
 use datafusion::prelude::*;
@@ -82,7 +84,8 @@ impl CustomExec {
         PlanProperties::new(
             eq_properties,
             Partitioning::UnknownPartitioning(1),
-            ExecutionMode::Bounded,
+            EmissionType::Incremental,
+            Boundedness::Bounded,
         )
     }
 }
@@ -252,7 +255,7 @@ impl ExecutionPlan for CustomExec {
         &self.cache
     }
 
-    fn children(&self) -> Vec<Arc<dyn ExecutionPlan>> {
+    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
         vec![]
     }
 
@@ -306,7 +309,7 @@ impl TableProvider for CustomDataSource {
 
     async fn scan(
         &self,
-        _state: &SessionState,
+        _state: &dyn Session,
         projection: Option<&Vec<usize>>,
         // filters and limit can be used here to inject some push-down operations if needed
         _filters: &[Expr],

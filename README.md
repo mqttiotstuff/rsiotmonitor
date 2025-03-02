@@ -8,12 +8,12 @@ This is new rust implementation of the iotmonitor project.
 ## RoadMap
 
     [x] monitoring process
-    [x] states management and restoring
-    [x] mqtt integration
+    [x] states management and restoration
+    [x] mqtt integration (builtin or )
 
-    [x] web api for information
+    [ ] web api for device and agents information
 
-    [x] history saving.
+    [x] history save, and SQL querying.
     [x] rotating parquet file creation.
     
     [x] dynamic query the history, (either a flat parquet file providing, or datafusion arrow flight protocol). may be an inflight sql integration, With a custom source, see the best approach to integrate the query, using datafusion

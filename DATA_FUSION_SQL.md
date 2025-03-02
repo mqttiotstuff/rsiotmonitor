@@ -237,10 +237,18 @@ select count(*),min(date_part('hour',timestamp)) as hour,month,day,min(date_part
 {"COUNT(*)":5,"day":25,"dow":0.0,"hour":23.0,"month":6}
 {"COUNT(*)":10,"day":12,"dow":1.0,"hour":23.0,"month":6}
 
-# analyse temperature/humidity brute
+# Analyse temperature/humidity brute
 
 drop view l;
 create view l as select timestamp, arrow_cast(timestamp,'Timestamp(Microsecond,None)') as time, arrow_cast(arrow_cast(payload,'Utf8'),'Float32') as t from mqtt_hive where month=4 and year=2024 and day=10 and arrow_cast(topic,'Utf8') = 'home/esp49/sensors/lux';
 
 select date_bin('1hours',time) h, mean(t), stddev(t),regr_slope(t, timestamp) from l group by h order by h;
+
+
+
+### Analyse server
+
+```
+select arrow_cast(arrow_cast(payload,'Utf8'),'Int64') as status, month, day, arrow_cast(timestamp,'Timestamp(Microsecond,None)') as t from mqtt_hive where arrow_cast(topic,'Utf8') = 'home/agents/httpmonitoring/https:__sgf.modelis-senegal.com:25443_/health' 
+```
 

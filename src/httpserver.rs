@@ -222,7 +222,7 @@ pub async fn server_start<I>(binding: (I, u16), history_db: &Arc<History>)
 where
     I: Into<IpAddr>,
 {
-    // And run our service using `hyper`
+    // And run our service using `actix`
     let addr = SocketAddr::from(binding);
     let local_history_db = history_db.clone();
 
@@ -231,13 +231,15 @@ where
     };
 
     HttpServer::new(move || {
-        let cors = Cors::default()
-            .send_wildcard()
-            // .allowed_origin_fn(|_origin, _req_head| true)
-            .allowed_methods(vec!["GET", "POST"])
-            .allowed_headers(vec![http::header::AUTHORIZATION, http::header::ACCEPT])
-            .allowed_header(http::header::CONTENT_TYPE)
-            .max_age(3600);
+        // let cors = Cors::default()
+        //     .send_wildcard()
+        //     // .allowed_origin_fn(|_origin, _req_head| true)
+        //     // .allowed_methods(vec!["GET", "POST"])
+        //     // .allowed_headers(vec![http::header::AUTHORIZATION, http::header::ACCEPT])
+        //     // .allowed_header(http::header::CONTENT_TYPE)
+        //     .max_age(3600);
+
+        let cors = Cors::permissive();
 
         let local_query: Data = query_endpoint.clone();
         App::new()

@@ -1,5 +1,3 @@
-// use futures_core::future;
-
 #[allow(unused_imports)]
 use log::{debug, error, info, trace, warn};
 
@@ -35,6 +33,7 @@ async fn wait_2s() -> mqtt_async_client::Result<()> {
     Ok(())
 }
 
+/// History recording loop
 async fn history_and_run(
     histo_topic: String,
     monitor: &Arc<tokio::sync::RwLock<IOTMonitor>>,
@@ -652,7 +651,7 @@ async fn main() {
 
     // handling commands
     if let Some(export_history_to_parse) = &opt.command_archive_history_date {
-        println!(
+        info!(
             "handling history export on date : {}",
             export_history_to_parse
         );
@@ -664,7 +663,7 @@ async fn main() {
                 .into();
             export_history_day_from_datetime(history, day).unwrap();
 
-            println!("export done");
+            info!("export done");
             return;
         } else {
             panic!("no history configured, cannot export history on date");
@@ -675,11 +674,12 @@ async fn main() {
         let config = crate::config::read_configuration().await.unwrap();
 
         if let Some(history) = config.history {
+            info!("exporting history");
             if let Err(e) = history.export_to_parquet(export_snapshot, None, false) {
                 error!("Error while exporting to parquet {}", e);
                 panic!("error while exporting : {:?}", e);
             }
-            println!("snapshot done");
+            info!("snapshot done");
             return;
         } else {
             panic!("no history configured, cannot create snapshot");

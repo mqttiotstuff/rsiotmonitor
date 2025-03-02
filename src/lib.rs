@@ -35,7 +35,7 @@ pub struct IOTMonitor {
     pub history: Option<Arc<History>>,
 
     #[derivative(Debug = "ignore")]
-    pub state_connection: Option<Arc<sqlite::ConnectionWithFullMutex>>,
+    pub state_connection: Option<Arc<sqlite::ConnectionThreadSafe>>,
 
     /// monitored elements
     monitored_devices: HashMap<String, Box<MonitoringInfo>>,

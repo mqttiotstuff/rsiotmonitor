@@ -1,5 +1,3 @@
-
-
 use std::marker::PhantomData;
 use std::path::Path;
 use std::sync::Arc;
@@ -136,6 +134,8 @@ impl History {
         date_range: Option<(i64, i64)>,
         delete_values: bool,
     ) -> Result<(), Box<dyn Error>> {
+
+
         let path = Path::new(output_file);
 
         let record_type = "
@@ -155,8 +155,8 @@ impl History {
                 .set_compression(parquet::basic::Compression::SNAPPY)
                 .build(),
         );
-        let file = fs::File::create(path).unwrap();
-        let mut writer = SerializedFileWriter::new(file, schema, props).unwrap();
+        let file = fs::File::create(path)?;
+        let mut writer = SerializedFileWriter::new(file, schema, props)?;
 
         // writing rows count ..
         let mut cpt: u128;
@@ -168,7 +168,7 @@ impl History {
         let mut last: Option<i64> = None;
 
         while row.is_some() {
-            let mut row_group_writer = writer.next_row_group().unwrap();
+            let mut row_group_writer = writer.next_row_group()?;
 
             cpt = 1;
 
@@ -221,120 +221,133 @@ impl History {
                     row = it.next();
                 }
             }
+            {
+                let next_column = row_group_writer.next_column()?;
+                if let Some(mut col_writer) = next_column {
+                    col_writer
+                        .typed::<Int32Type>()
+                        .write_batch(
+                            &all_days, None,
+                            None, // Some(&[3, 3, 3, 2, 2]),
+                                 //Some(&[0, 1, 0, 1, 1]),
+                        )
+                        .expect("error in writing columns");
 
-            if let Some(mut col_writer) = row_group_writer.next_column().unwrap() {
-                col_writer
-                    .typed::<Int32Type>()
-                    .write_batch(
-                        &all_days, None,
-                        None, // Some(&[3, 3, 3, 2, 2]),
-                             //Some(&[0, 1, 0, 1, 1]),
-                    )
-                    .expect("error in writing columns");
-
-                col_writer.close().unwrap();
-            } else {
-                return Err(Box::new(HistoryError {}));
+                    col_writer.close().unwrap();
+                } else {
+                    return Err(Box::new(HistoryError {}));
+                }
             }
 
-            if let Some(mut col_writer) = row_group_writer.next_column().unwrap() {
-                col_writer
-                    .typed::<Int32Type>()
-                    .write_batch(
-                        &all_month, None,
-                        None, // Some(&[3, 3, 3, 2, 2]),
-                             //Some(&[0, 1, 0, 1, 1]),
-                    )
-                    .expect("error in writing columns");
+            {
+                let next_column = row_group_writer.next_column()?;
+                if let Some(mut col_writer) = next_column {
+                    col_writer
+                        .typed::<Int32Type>()
+                        .write_batch(
+                            &all_month, None,
+                            None, // Some(&[3, 3, 3, 2, 2]),
+                                 //Some(&[0, 1, 0, 1, 1]),
+                        )
+                        .expect("error in writing columns");
 
-                col_writer.close().unwrap();
-            } else {
-                return Err(Box::new(HistoryError {}));
+                    col_writer.close().unwrap();
+                } else {
+                    return Err(Box::new(HistoryError {}));
+                }
             }
+            {
+                let next_column = row_group_writer.next_column()?;
+                if let Some(mut col_writer) = next_column {
+                    col_writer
+                        .typed::<Int32Type>()
+                        .write_batch(
+                            &all_year, None,
+                            None, // Some(&[3, 3, 3, 2, 2]),
+                                 //Some(&[0, 1, 0, 1, 1]),
+                        )
+                        .expect("error in writing columns");
 
-            if let Some(mut col_writer) = row_group_writer.next_column().unwrap() {
-                col_writer
-                    .typed::<Int32Type>()
-                    .write_batch(
-                        &all_year, None,
-                        None, // Some(&[3, 3, 3, 2, 2]),
-                             //Some(&[0, 1, 0, 1, 1]),
-                    )
-                    .expect("error in writing columns");
-
-                col_writer.close().unwrap();
-            } else {
-                return Err(Box::new(HistoryError {}));
+                    col_writer.close().unwrap();
+                } else {
+                    return Err(Box::new(HistoryError {}));
+                }
             }
+            {
+                let next_column = row_group_writer.next_column()?;
+                // write the rows in the parquet file
+                if let Some(mut col_writer) = next_column {
+                    col_writer
+                        .typed::<Int64Type>()
+                        .write_batch(
+                            &all_timestamps,
+                            None,
+                            None, // Some(&[3, 3, 3, 2, 2]),
+                                  //Some(&[0, 1, 0, 1, 1]),
+                        )
+                        .expect("error in writing columns");
 
-            // write the rows in the parquet file
-            if let Some(mut col_writer) = row_group_writer.next_column().unwrap() {
-                col_writer
-                    .typed::<Int64Type>()
-                    .write_batch(
-                        &all_timestamps,
-                        None,
-                        None, // Some(&[3, 3, 3, 2, 2]),
-                              //Some(&[0, 1, 0, 1, 1]),
-                    )
-                    .expect("error in writing columns");
-
-                col_writer.close().unwrap();
-            } else {
-                return Err(Box::new(HistoryError {}));
+                    col_writer.close().unwrap();
+                } else {
+                    return Err(Box::new(HistoryError {}));
+                }
             }
+            {
+                let next_column = row_group_writer.next_column()?;
+                if let Some(mut col_writer) = next_column {
+                    // write all
 
-            if let Some(mut col_writer) = row_group_writer.next_column().unwrap() {
-                // write all
+                    let v: Vec<ByteArray> = all_topics
+                        .iter()
+                        .map(|i| ByteArray::from(i.as_bytes()))
+                        .collect();
 
-                let v: Vec<ByteArray> = all_topics
-                    .iter()
-                    .map(|i| ByteArray::from(i.as_bytes()))
-                    .collect();
+                    col_writer
+                        .typed::<ByteArrayType>()
+                        .write_batch(
+                            &v, None,
+                            None, // Some(&[3, 3, 3, 2, 2]),
+                                 //Some(&[0, 1, 0, 1, 1]),
+                        )
+                        .expect("error in writing columns");
 
-                col_writer
-                    .typed::<ByteArrayType>()
-                    .write_batch(
-                        &v, None,
-                        None, // Some(&[3, 3, 3, 2, 2]),
-                             //Some(&[0, 1, 0, 1, 1]),
-                    )
-                    .expect("error in writing columns");
-
-                col_writer.close().unwrap();
-            } else {
-                return Err(Box::new(HistoryError {}));
+                    col_writer.close().unwrap();
+                } else {
+                    return Err(Box::new(HistoryError {}));
+                }
             }
-            if let Some(mut col_writer) = row_group_writer.next_column().unwrap() {
-                // write all
+            {
+                let next_column = row_group_writer.next_column()?;
+                if let Some(mut col_writer) = next_column {
+                    // write all
 
-                let v: Vec<ByteArray> = all_payloads
-                    .iter()
-                    .map(|i| ByteArray::from(i.clone()))
-                    .collect();
+                    let v: Vec<ByteArray> = all_payloads
+                        .iter()
+                        .map(|i| ByteArray::from(i.clone()))
+                        .collect();
 
-                col_writer
-                    .typed::<ByteArrayType>()
-                    .write_batch(
-                        &v, None,
-                        None, // Some(&[3, 3, 3, 2, 2]),
-                             //Some(&[0, 1, 0, 1, 1]),
-                    )
-                    .expect("error in writing columns");
+                    col_writer
+                        .typed::<ByteArrayType>()
+                        .write_batch(
+                            &v, None,
+                            None, // Some(&[3, 3, 3, 2, 2]),
+                                 //Some(&[0, 1, 0, 1, 1]),
+                        )
+                        .expect("error in writing columns");
 
-                col_writer.close().unwrap();
-            } else {
-                return Err(Box::new(HistoryError {}));
+                    col_writer.close().unwrap();
+                } else {
+                    return Err(Box::new(HistoryError {}));
+                }
             }
-
             row_group_writer.close().unwrap();
         }
-
         writer.close().unwrap();
 
         // self.database.delete(&WriteOptions::new(), &key);
 
         if delete_values {
+            debug!("deleting exported records");
             if let Some(last_timestamp) = last {
                 for (k, _v) in self.database.iter(&ReadOptions::new()) {
                     let key_value = i64::from_u8(&k);
@@ -373,14 +386,15 @@ pub fn test_storage() {
 
 #[test]
 pub fn test_storage_timestamp() -> Result<(), Box<dyn Error>> {
+
     let h = History::init().unwrap();
+    
     for t in 0..63 {
         let e: i64 = 1 << t;
         h.store_event_with_timestamp(e, "a".into(), "b".as_bytes())?;
     }
 
     // dump
-
     let mut cpt: u128 = 0;
     let mut it = h.database.iter(&ReadOptions::new());
 

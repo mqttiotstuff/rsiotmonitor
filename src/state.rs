@@ -1,12 +1,12 @@
 ///! Memoize the iot states in database
 
-use sqlite::{self, Connection, ConnectionWithFullMutex, Result, State};
+use sqlite::{self, Connection, ConnectionThreadSafe, Result, State};
 
 #[allow(unused_imports)]
 use log::debug;
 
-pub fn init() -> Result<ConnectionWithFullMutex> {
-    let connection = Connection::open_with_full_mutex("iotstates.db").unwrap();
+pub fn init() -> Result<ConnectionThreadSafe> {
+    let connection = Connection::open_thread_safe("iotstates.db").unwrap();
     let query =
         "CREATE TABLE IF NOT EXISTS iotstates (name TEXT, topic TEXT PRIMARY KEY, state BLOB)";
     connection

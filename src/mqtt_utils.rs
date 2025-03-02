@@ -1,7 +1,7 @@
 #[allow(unused_imports)]
 use log::{debug, error, info, trace, warn};
 use mqtt_async_client::client::{Client, KeepAlive, QoS};
-use rustls::{ClientConfig, OwnedTrustAnchor, RootCertStore};
+use rustls::{pki_types::TrustAnchor, ClientConfig, RootCertStore};
 use std::{fs::File, io::BufReader, time::Duration};
 
 // #[cfg(feature = "tls")]
@@ -36,27 +36,20 @@ pub fn client_from_args(args: &MqttConfig) -> mqtt_async_client::Result<Client> 
             let mut reader = BufReader::new(certfile);
 
             root_store.add_parsable_certificates(
-                &rustls_pemfile::certs(&mut reader).expect("cannot read the certificate"),
+                rustls_pemfile::certs(&mut reader).map(|c| c.unwrap()),
             );
 
             let cc = ClientConfig::builder()
-                .with_safe_defaults()
                 .with_root_certificates(root_store)
                 .with_no_client_auth();
 
             Some(cc)
         } else if args.tls_mozilla_root_cas {
-            let mut root_store = RootCertStore::empty();
-            root_store.add_trust_anchors(webpki_roots::TLS_SERVER_ROOTS.iter().map(|ta| {
-                OwnedTrustAnchor::from_subject_spki_name_constraints(
-                    ta.subject,
-                    ta.spki,
-                    ta.name_constraints,
-                )
-            }));
-
-            let cc = rustls::ClientConfig::builder()
-                .with_safe_defaults()
+            let root_store = rustls::RootCertStore {
+                roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
+            };
+            
+            let cc = tokio_rustls::rustls::ClientConfig::builder()             
                 .with_root_certificates(root_store)
                 .with_no_client_auth();
             // cc.root_store
