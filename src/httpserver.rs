@@ -128,6 +128,26 @@ struct AppData {
     pub config: Arc<HttpServerConfig>,
 }
 
+// Wrapper stream that holds a semaphore permit for its entire duration
+// This ensures the permit is released when the stream completes
+struct StreamWithPermit<S> {
+    inner: S,
+    _permit: tokio::sync::SemaphorePermit<'static>,
+}
+
+impl<S: Stream> Stream for StreamWithPermit<S> {
+    type Item = S::Item;
+
+    fn poll_next(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        unsafe {
+            self.map_unchecked_mut(|s| &mut s.inner).poll_next(cx)
+        }
+    }
+}
+
 fn stream_recordbatch<S: Stream<Item = Result<RecordBatch, DataFusionError>>>(
     input: S,
     timeout_duration: Duration,

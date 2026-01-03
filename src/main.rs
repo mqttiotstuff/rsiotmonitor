@@ -629,7 +629,7 @@ struct Opt {
 
     #[structopt(
         long,
-        default_value = "10",
+        default_value = "60",
         name = "analyticTimeoutToExecuteQuery",
         help = "Timeout to execute query in seconds"
     )]
@@ -646,7 +646,7 @@ struct Opt {
 
     #[structopt(
         long,
-        default_value = "60",
+        default_value = "600",
         name = "analyticTimeoutToStream",
         help = "Timeout to stream response in seconds"
     )]
