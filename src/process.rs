@@ -71,19 +71,19 @@ pub struct ProcessStatistics {
     pub threads: Option<u32>, // Threads: number of threads
 
     // Memory information from /proc/pid/status (values in kB)
-    pub vm_peak: Option<u64>, // VmPeak: peak virtual memory size
-    pub vm_size: Option<u64>, // VmSize: virtual memory size
-    pub vm_rss: Option<u64>,  // VmRSS: resident set size (physical memory)
-    pub vm_hwm: Option<u64>,  // VmHWM: peak resident set size
-    pub vm_data: Option<u64>, // VmData: data segment size
-    pub vm_stk: Option<u64>,  // VmStk: stack size
-    pub vm_exe: Option<u64>,  // VmExe: executable code size
-    pub vm_lib: Option<u64>,  // VmLib: library code size
-    pub vm_swap: Option<u64>, // VmSwap: swapped virtual memory
+    pub vm_peak_in_kb: Option<u64>, // VmPeak: peak virtual memory size
+    pub vm_size_in_kb: Option<u64>, // VmSize: virtual memory size
+    pub vm_rss_in_kb: Option<u64>,  // VmRSS: resident set size (physical memory)
+    pub vm_hwm_in_kb: Option<u64>,  // VmHWM: peak resident set size
+    pub vm_data_in_kb: Option<u64>, // VmData: data segment size
+    pub vm_stk_in_kb: Option<u64>,  // VmStk: stack size
+    pub vm_exe_in_kb: Option<u64>,  // VmExe: executable code size
+    pub vm_lib_in_kb: Option<u64>,  // VmLib: library code size
+    pub vm_swap_in_kb: Option<u64>, // VmSwap: swapped virtual memory
 
-    pub rss_anon: Option<u64>, // RssAnon: anonymous resident set size
-    pub rss_file: Option<u64>, // RssFile: file resident set size
-    pub rss_shmem: Option<u64>, // RssShmem: shared memory resident set size
+    pub rss_anon_in_kb: Option<u64>, // RssAnon: anonymous resident set size
+    pub rss_file_in_kb: Option<u64>, // RssFile: file resident set size
+    pub rss_shmem_in_kb: Option<u64>, // RssShmem: shared memory resident set size
 
     // Additional fields (not directly from /proc/pid/status)
     pub process_start_time: Option<SystemTime>, // Calculated from /proc/pid/stat
@@ -103,19 +103,19 @@ impl ProcessStatistics {
             state: String::new(),
             pid,
             threads: None,
-            vm_peak: None,
-            vm_size: None,
-            vm_rss: None,
-            vm_hwm: None,
-            vm_data: None,
-            vm_stk: None,
-            vm_exe: None,
-            vm_lib: None,
-            vm_swap: None,
+            vm_peak_in_kb: None,
+            vm_size_in_kb: None,
+            vm_rss_in_kb: None,
+            vm_hwm_in_kb: None,
+            vm_data_in_kb: None,
+            vm_stk_in_kb: None,
+            vm_exe_in_kb: None,
+            vm_lib_in_kb: None,
+            vm_swap_in_kb: None,
 
-            rss_anon: None,
-            rss_file: None,
-            rss_shmem: None,
+            rss_anon_in_kb: None,
+            rss_file_in_kb: None,
+            rss_shmem_in_kb: None,
             
             process_start_time: None,
 
@@ -368,62 +368,62 @@ pub fn get_process_statistics(pid: u32) -> Result<ProcessStatistics, Box<dyn Err
                     // Format: "1234 kB"
 
                     if let Ok(kb_val) = parse_value_with_units(value) {
-                        process_statistics.vm_peak = Some(kb_val);
+                        process_statistics.vm_peak_in_kb = Some(kb_val);
                     }
                 }
                 "VmSize" => {
                     if let Ok(kb_val) = parse_value_with_units(value) {
-                        process_statistics.vm_size = Some(kb_val);
+                        process_statistics.vm_size_in_kb = Some(kb_val);
                     }
                 }
                 "VmRSS" => {
                     if let Ok(kb_val) = parse_value_with_units(value) {
-                        process_statistics.vm_rss = Some(kb_val);
+                        process_statistics.vm_rss_in_kb = Some(kb_val);
                     }
                 }
                 "VmHWM" => {
                     if let Ok(kb_val) = parse_value_with_units(value) {
-                        process_statistics.vm_hwm = Some(kb_val);
+                        process_statistics.vm_hwm_in_kb = Some(kb_val);
                     }
                 }
                 "VmData" => {
                     if let Ok(kb_val) = parse_value_with_units(value) {
-                        process_statistics.vm_data = Some(kb_val);
+                        process_statistics.vm_data_in_kb = Some(kb_val);
                     }
                 }
                 "VmStk" => {
                     if let Ok(kb_val) = parse_value_with_units(value) {
-                        process_statistics.vm_stk = Some(kb_val);
+                        process_statistics.vm_stk_in_kb = Some(kb_val);
                     }
                 }
                 "VmExe" => {
                     if let Ok(kb_val) = parse_value_with_units(value) {
-                        process_statistics.vm_exe = Some(kb_val);
+                        process_statistics.vm_exe_in_kb = Some(kb_val);
                     }
                 }
                 "VmLib" => {
                     if let Ok(kb_val) = parse_value_with_units(value) {
-                        process_statistics.vm_lib = Some(kb_val);
+                        process_statistics.vm_lib_in_kb = Some(kb_val);
                     }
                 }
                 "VmSwap" => {
                     if let Ok(kb_val) = parse_value_with_units(value) {
-                        process_statistics.vm_swap = Some(kb_val);
+                        process_statistics.vm_swap_in_kb = Some(kb_val);
                     }
                 }, 
                 "RssAnon" => {
                     if let Ok(kb_val) = parse_value_with_units(value) {
-                        process_statistics.rss_anon = Some(kb_val);
+                        process_statistics.rss_anon_in_kb = Some(kb_val);
                     }
                 },
                 "RssFile" => {
                     if let Ok(kb_val) = parse_value_with_units(value) {
-                        process_statistics.rss_file = Some(kb_val);
+                        process_statistics.rss_file_in_kb = Some(kb_val);
                     }
                 },
                 "RssShmem" => {
                     if let Ok(kb_val) = parse_value_with_units(value) {
-                        process_statistics.rss_shmem = Some(kb_val);
+                        process_statistics.rss_shmem_in_kb = Some(kb_val);
                     }
                 }
                 _ => {

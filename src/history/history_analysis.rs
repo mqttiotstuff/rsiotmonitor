@@ -20,12 +20,13 @@ use datafusion::datasource::{provider_as_source, TableProvider, TableType};
 use datafusion::error::Result;
 use datafusion::execution::context::{SessionState, TaskContext};
 use datafusion::execution::RecordBatchStream;
+use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::parquet::file::serialized_reader::ReadOptions;
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::memory::MemoryStream;
 use datafusion::physical_plan::{
-    project_schema, DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning,
-    PlanProperties, SendableRecordBatchStream,
+    project_schema, DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
+    SendableRecordBatchStream,
 };
 use datafusion::prelude::*;
 use datafusion::sql::TableReference;
@@ -148,20 +149,21 @@ impl Stream for LevelDBStream {
 
             const MAX_PACKET_SIZE: usize = 100_000; // packet
 
-            let mut all_topics = StringBuilder::with_capacity( MAX_PACKET_SIZE, MAX_PACKET_SIZE * 50);
+            let mut all_topics =
+                StringBuilder::with_capacity(MAX_PACKET_SIZE, MAX_PACKET_SIZE * 50);
             let mut all_timestamps = Int64Builder::with_capacity(MAX_PACKET_SIZE);
             let mut all_year = Int32Builder::with_capacity(MAX_PACKET_SIZE);
             let mut all_month = Int32Builder::with_capacity(MAX_PACKET_SIZE);
             let mut all_days = Int32Builder::with_capacity(MAX_PACKET_SIZE);
-            let mut all_payloads = BinaryBuilder::with_capacity(MAX_PACKET_SIZE, MAX_PACKET_SIZE * 1000);
+            let mut all_payloads =
+                BinaryBuilder::with_capacity(MAX_PACKET_SIZE, MAX_PACKET_SIZE * 1000);
 
             use leveldb::iterator::Iterable;
 
             log::info!("open cursor for index {}", &mutself.index);
             let it: leveldb::iterator::Iterator =
-            mutself.database.iter(&leveldb::options::ReadOptions::new());
+                mutself.database.iter(&leveldb::options::ReadOptions::new());
 
-            
             let mut skipped_iterator = it.skip(mutself.index);
 
             let mut row = skipped_iterator.next();
@@ -324,9 +326,11 @@ impl TableProvider for CustomDataSource {
  */
 pub async fn create_session(
     history_db: &Arc<History>,
+    config: SessionConfig,
+    runtime_env: RuntimeEnv,
 ) -> Result<SessionContext, Box<dyn std::error::Error>> {
     // create local execution context
-    let ctx = SessionContext::new();
+    let ctx = SessionContext::new_with_config_rt(config, Arc::new(runtime_env));
 
     let db: CustomDataSource = CustomDataSource {
         inner: history_db.clone(),

@@ -20,7 +20,7 @@ use std::{
     time::Duration,
 };
 
-use tokio::sync::Semaphore;
+use tokio::{sync::Semaphore, time::timeout};
 
 use crate::history::{create_session, History};
 
@@ -28,7 +28,12 @@ use datafusion::{
     arrow::array::RecordBatch,
     dataframe::DataFrame,
     error::DataFusionError,
-    execution::{context::SessionContext, SendableRecordBatchStream},
+    execution::{
+        context::SessionContext,
+        memory_pool::GreedyMemoryPool,
+        runtime_env::{RuntimeEnv, RuntimeEnvBuilder},
+        SendableRecordBatchStream,
+    },
 };
 
 use actix_web::{
@@ -96,10 +101,7 @@ impl error::ResponseError for HttpProcessingError {}
 ///////////////////////////////////////////////////////////////////////////////////////////
 // server implementation
 
-const MAX_SIMULTANEOUS_QUERIES: usize = 2;
-const MAX_ATTEMPTS_TO_ACQUIRE_SLOT: usize = 100;
 const TIMEOUT_TO_ACQUIRE_SLOT: Duration = Duration::from_millis(100);
-
 
 #[derive(Debug)]
 pub enum AnalyticProfileType {
@@ -112,9 +114,9 @@ pub struct HttpServerConfig {
     pub simultaneous_queries: usize,
     pub max_attempts_to_acquire_slot: usize,
     pub timeout_to_acquire_slot: Duration,
+    pub timeout_to_execute_query: Duration,
     pub analytic_profile_type: Option<AnalyticProfileType>,
 }
-
 
 #[derive(Clone)]
 struct Data {
@@ -214,7 +216,7 @@ async fn sql_query(
     let app_data = d.unwrap();
 
     let semaphore = app_data.simultaneous_queries.clone();
-    let mut max_attempts :i32 = app_data.config.max_attempts_to_acquire_slot as i32;
+    let mut max_attempts: i32 = app_data.config.max_attempts_to_acquire_slot as i32;
     let mut semaphore_permit;
     loop {
         let result = semaphore.acquire().await;
@@ -247,29 +249,41 @@ async fn sql_query(
 
     // implementation
     log::debug!("creating session");
-    let ctx: SessionContext = create_session(&h).await?;
 
-    //  for low memory usage,
-    // // Query still gets parallelized, but each partition will have more memory to use
-    // SET datafusion.execution.target_partitions = 4;
-    // // Smaller than the default '8192', while still keep the benefit of vectorized execution
-    // SET datafusion.execution.batch_size = 1024;
+    let runtime_env = match app_data.config.analytic_profile_type {
+        Some(AnalyticProfileType::Small) => {
+            // restrict to using at most 100MB of memory
+            let pool_size = 100 * 1024 * 1024;
+            let runtime_env = RuntimeEnvBuilder::new()
+                .with_memory_pool(Arc::new(GreedyMemoryPool::new(pool_size)))
+                .build()
+                .unwrap();
 
-
-    if let Some(analytic_profile_type) = &app_data.config.analytic_profile_type {
-        log::debug!("setting analytic profile type: {:?}", analytic_profile_type);
-        match analytic_profile_type {
-            AnalyticProfileType::Small => {
-                ctx.sql("SET datafusion.execution.target_partitions = 2").await?;
-                ctx.sql("SET datafusion.execution.batch_size = 512").await?;
-            }
-            AnalyticProfileType::Large => {
-                ctx.sql("SET datafusion.execution.target_partitions = 8").await?;
-                ctx.sql("SET datafusion.execution.batch_size = 2048").await?;
-            }
+            runtime_env
         }
-    }
+        Some(AnalyticProfileType::Large) => {
+            // restrict to using at most 1GB of memory
+            let pool_size = 1024 * 1024 * 1024;
+            let runtime_env = RuntimeEnvBuilder::new()
+                .with_memory_pool(Arc::new(GreedyMemoryPool::new(pool_size)))
+                .build()
+                .unwrap();
+            runtime_env
+        }
+        None => RuntimeEnv::default(),
+    };
 
+    let config_env = match app_data.config.analytic_profile_type {
+        Some(AnalyticProfileType::Small) => SessionConfig::new()
+            .with_batch_size(512)
+            .with_target_partitions(2),
+        Some(AnalyticProfileType::Large) => SessionConfig::new()
+            .with_target_partitions(8)
+            .with_batch_size(2048),
+        None => SessionConfig::new(),
+    };
+
+    let ctx: SessionContext = create_session(&h, config_env, runtime_env).await?;
 
     let execute_options = SQLOptions::new()
         .with_allow_ddl(false)
@@ -279,18 +293,46 @@ async fn sql_query(
     log::info!("executing sql query: {}", &sql);
     let asyncdf = ctx.sql_with_options(&sql, execute_options);
     let df = asyncdf.await?;
-    log::debug!("dataframe {:?} created, collecting", &df);
-    let dfcontent = df.execute_stream().await?;
 
-    log::debug!("streaming content");
-    let stream = stream_recordbatch(dfcontent);
+    let result = 
+         timeout(app_data.config.timeout_to_execute_query, df.execute_stream()).await;
 
-    let response = HttpResponseBuilder::new(StatusCode::OK)
-        // .append_header(("Content-Type", "plain/text"))
-        .streaming(stream);
+    let response = match result {
+        Ok(Ok(batches)) => {
+            // success
 
-    // release the semaphore
-    drop(semaphore_permit);
+            log::debug!("dataframe created, collecting");
+
+            log::debug!("streaming content");
+            let stream = stream_recordbatch(batches);
+
+            let response = HttpResponseBuilder::new(StatusCode::OK)
+                // .append_header(("Content-Type", "plain/text"))
+                .streaming(stream);
+           
+            response
+        }
+        Ok(Err(e)) => {
+            // query failed
+            log::error!("error, query failed: {}", e);
+            return Err(HttpProcessingError {
+                name: format!("error, query failed: {}", e).into(),
+            })
+            .into()
+        }
+        Err(e) => {
+            // timeout hit
+            // query future is dropped -> execution stops
+            log::error!("error, query timed out after {} seconds: {}", app_data.config.timeout_to_execute_query.as_secs(), e);
+            return Err(HttpProcessingError {
+                name: format!("error, query timed out after {} seconds: {}", app_data.config.timeout_to_execute_query.as_secs(), e).into(),
+            })  
+            .into()
+        }
+    };
+
+     // release the semaphore
+     drop(semaphore_permit);
 
     return Ok(response);
 }
@@ -298,8 +340,7 @@ async fn sql_query(
 // start the server
 // binding is the address and port to bind to
 // history_db is the history database
-pub async fn server_start(config: HttpServerConfig, history_db: &Arc<History>)
-{
+pub async fn server_start(config: HttpServerConfig, history_db: &Arc<History>) {
     // And run our service using `actix`
     let addr = SocketAddr::from(config.v4_binding.clone());
     let local_history_db = history_db.clone();

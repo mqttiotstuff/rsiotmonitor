@@ -629,6 +629,14 @@ struct Opt {
 
     #[structopt(
         long,
+        default_value = "30",
+        name = "analyticTimeoutToExecuteQuery",
+        help = "Timeout to execute query in seconds"
+    )]
+    analytic_timeout_to_execute_query: u64,
+
+    #[structopt(
+        long,
         name = "activateStatisticsOnMonitor",
         help = "Activate statistics for monitor process"
     )]
@@ -718,6 +726,10 @@ async fn main() {
         .parse::<Ipv4Addr>()
         .expect("error while parsing the http server address, must be a valid ipv4 address");
 
+
+    let analytic_timeout_to_execute_query = Duration::from_secs(opt.analytic_timeout_to_execute_query);
+    info!("analytic sql timeout : {} seconds", analytic_timeout_to_execute_query.as_secs());
+
     // handling commands
     if let Some(export_history_to_parse) = &opt.command_archive_history_date {
         info!(
@@ -798,6 +810,7 @@ async fn main() {
             simultaneous_queries: 2,
             max_attempts_to_acquire_slot: 100,
             timeout_to_acquire_slot: Duration::from_millis(100),
+            timeout_to_execute_query: analytic_timeout_to_execute_query,
             analytic_profile_type: if opt.analytic_small_profile {
                 Some(httpserver::AnalyticProfileType::Small)
             } else {
