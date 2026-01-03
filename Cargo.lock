@@ -3576,6 +3576,8 @@ dependencies = [
  "rs-leveldb",
  "rustls",
  "rustls-pemfile",
+ "serde",
+ "serde_json",
  "sqlite",
  "sqlite3-src",
  "structopt",

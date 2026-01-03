@@ -317,7 +317,10 @@ fn export_history_day_from_datetime(
 
 /// start method
 #[allow(unreachable_code)]
-async fn start(config: IOTMonitor) -> Result<(), Box<dyn RustError>> {
+async fn start(
+    config: IOTMonitor,
+    activate_statistics_on_monitor: bool,
+) -> Result<(), Box<dyn RustError>> {
     // set scheduling
 
     if let Some(hist) = config.history.clone() {
@@ -412,7 +415,7 @@ async fn start(config: IOTMonitor) -> Result<(), Box<dyn RustError>> {
         }
     }
 
-    // main loop, reconnect
+    // main loop, reconnect, send statistics
     loop {
         let conn_result = main_client_connection.connect().await;
 
@@ -517,8 +520,37 @@ async fn start(config: IOTMonitor) -> Result<(), Box<dyn RustError>> {
                                 let publish_result = cnx_mqtt.publish(&pexpired).await;
                                 if let Err(_e) = publish_result {
                                     warn!("error in publishing the health check");
-                                    break;
+                                    break; // try to reconnect
                                 }
+                            }
+                        }
+
+                        if activate_statistics_on_monitor {
+                            // push process statistics
+                            // get current process pid
+                            let current_process_pid = std::process::id();
+                            let process_statistics =
+                                process::get_process_statistics(current_process_pid);
+                            if let Ok(process_statistics) = process_statistics {
+                                info!("process statistics: {:?}", process_statistics);
+                                // serialize to json, in mqtt format
+                                if let Ok(json_data) = serde_json::to_string(&process_statistics) {
+                                    let mut pprocess_statistics = PublishOpts::new(
+                                        format!("{}/process_statistics", l_base_topic),
+                                        json_data.as_bytes().to_vec(),
+                                    );
+                                    pprocess_statistics.set_qos(int_to_qos(1));
+                                    pprocess_statistics.set_retain(false);
+                                    let publish_result =
+                                        cnx_mqtt.publish(&pprocess_statistics).await;
+                                    if let Err(_e) = publish_result {
+                                        warn!("error in publishing process statistics");
+                                    }
+                                } else {
+                                    warn!("error in serializing process statistics");
+                                }
+                            } else {
+                                warn!("error in getting process statistics");
                             }
                         }
 
@@ -592,12 +624,15 @@ struct Opt {
     )]
     http_server_port: u16,
 
+    #[structopt(long, name = "analyticSmallProfile", help = "Analytic Small profile")]
+    analytic_small_profile: bool,
+
     #[structopt(
         long,
-        name = "analyticSmallProfile",
-        help = "Analytic Small profile",        
+        name = "activateStatisticsOnMonitor",
+        help = "Activate statistics for monitor process"
     )]
-    analytic_small_profile: bool,
+    activate_statistics_on_monitor: bool,
 
     #[structopt(long)]
     command_archive_history_date: Option<String>,
@@ -741,10 +776,12 @@ async fn main() {
         });
     }
 
-    let config = crate::config::read_configuration().await.unwrap_or_else(|e| {
-        log::error!("Error reading configuration: {}", e);
-        panic!("error while reading the configuration: {:?}", e);
-    });
+    let config = crate::config::read_configuration()
+        .await
+        .unwrap_or_else(|e| {
+            log::error!("Error reading configuration: {}", e);
+            panic!("error while reading the configuration: {:?}", e);
+        });
 
     debug!("Starting with config : {:?}\n", &config);
 
@@ -761,12 +798,17 @@ async fn main() {
             simultaneous_queries: 2,
             max_attempts_to_acquire_slot: 100,
             timeout_to_acquire_slot: Duration::from_millis(100),
-            analytic_profile_type: if opt.analytic_small_profile { Some(httpserver::AnalyticProfileType::Small) } else { None },
+            analytic_profile_type: if opt.analytic_small_profile {
+                Some(httpserver::AnalyticProfileType::Small)
+            } else {
+                None
+            },
         };
-
 
         httpserver::server_start(http_server_config, &history_ref).await;
     });
 
-    start(config).await.unwrap();
+    start(config, opt.activate_statistics_on_monitor)
+        .await
+        .unwrap();
 }
