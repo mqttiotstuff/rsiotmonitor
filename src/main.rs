@@ -635,6 +635,14 @@ struct Opt {
     )]
     analytic_timeout_to_execute_query: u64,
 
+    #[structopt(
+        long,
+        default_value = "5",
+        name = "analyticMaxSimultaneousQueries",
+        help = "Maximum simultaneous analytic queries"
+    )]
+    analytic_max_simultaneous_queries: usize,
+
 
     #[structopt(
         long,
@@ -818,7 +826,7 @@ async fn main() {
 
         let http_server_config = httpserver::HttpServerConfig {
             v4_binding: (http_server_address.into(), http_server_port),
-            simultaneous_queries: 2,
+            simultaneous_queries: opt.analytic_max_simultaneous_queries,
             max_attempts_to_acquire_slot: 100,
             timeout_to_acquire_slot: Duration::from_millis(100),
             timeout_to_execute_query: analytic_timeout_to_execute_query,
