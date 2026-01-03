@@ -15,7 +15,7 @@ use std::{
     net::{IpAddr, SocketAddr},
     pin::Pin,
     process::Output,
-    sync::Arc,
+    sync::{Arc, OnceLock},
     task::{Context, Poll},
     time::{Duration, Instant},
 };
@@ -103,6 +103,9 @@ impl error::ResponseError for HttpProcessingError {}
 
 const TIMEOUT_TO_ACQUIRE_SLOT: Duration = Duration::from_millis(100);
 
+// Static semaphore for limiting concurrent requests
+static CONCURRENT_REQUESTS_SEMAPHORE: OnceLock<Arc<Semaphore>> = OnceLock::new();
+
 #[derive(Debug)]
 pub enum AnalyticProfileType {
     Small,
@@ -120,9 +123,8 @@ pub struct HttpServerConfig {
 }
 
 #[derive(Clone)]
-struct Data {
-    pub history_db: Arc<History>,
-    pub simultaneous_queries: Arc<Semaphore>,
+struct AppData {
+    pub history_db: Option<Arc<History>>,
     pub config: Arc<HttpServerConfig>,
 }
 
@@ -133,7 +135,7 @@ fn stream_recordbatch<S: Stream<Item = Result<RecordBatch, DataFusionError>>>(
     stream! {
             let mut first = true;  // for headers
             let stream_start = Instant::now();
-            
+
             for await value_result in input {
                 // Check if we've exceeded the timeout
                 if stream_start.elapsed() > timeout_duration {
@@ -144,7 +146,7 @@ fn stream_recordbatch<S: Stream<Item = Result<RecordBatch, DataFusionError>>>(
                     yield Err(timeout_error.into());
                     break;
                 }
-                
+
                 let value = value_result;
 
                 yield match value {
@@ -223,136 +225,144 @@ async fn sql_query(
     sql: web::Path<String>,
 ) -> Result<HttpResponse, HttpProcessingError> {
     use datafusion::prelude::*;
-    let d: Option<&Data> = req.app_data();
+
+    let d = req.app_data::<AppData>();
     if d.is_none() {
+        return Err("error, no app data found".into());
+    }
+    let app_data = d.unwrap();
+
+    if app_data.history_db.is_none() {
         return Err("error, no historical data found".into());
     }
 
-    let app_data = d.unwrap();
+    // Get the static semaphore
+    let semaphore = CONCURRENT_REQUESTS_SEMAPHORE
+        .get()
+        .ok_or_else(|| HttpProcessingError {
+            name: "error, semaphore not initialized".into(),
+        })?;
 
-    let semaphore = app_data.simultaneous_queries.clone();
-    let mut max_attempts: i32 = app_data.config.max_attempts_to_acquire_slot as i32;
-    let mut semaphore_permit;
-    loop {
-        let result = semaphore.acquire().await;
-        match result {
-            Ok(_permit) => {
-                log::debug!("acquired semaphore {}", _permit.num_permits());
-                semaphore_permit = _permit;
-                break;
+    if let Ok(permit) = semaphore.try_acquire() {
+        let semaphore_permit = permit;
+
+        assert!(app_data.history_db.is_some());
+        let h: Arc<History> = app_data.history_db.clone().unwrap();
+
+        // implementation
+        log::debug!("creating session");
+
+        let runtime_env = match app_data.config.analytic_profile_type {
+            Some(AnalyticProfileType::Small) => {
+                log::debug!("PROFILING : small profile activated");
+                // restrict to using at most 50MB of memory
+                let pool_size = 50 * 1024 * 1024;
+                let runtime_env = RuntimeEnvBuilder::new()
+                    .with_memory_pool(Arc::new(GreedyMemoryPool::new(pool_size)))
+                    .build()
+                    .unwrap();
+
+                runtime_env
+            }
+            Some(AnalyticProfileType::Large) => {
+                // restrict to using at most 1GB of memory
+                let pool_size = 1024 * 1024 * 1024;
+                let runtime_env = RuntimeEnvBuilder::new()
+                    .with_memory_pool(Arc::new(GreedyMemoryPool::new(pool_size)))
+                    .build()
+                    .unwrap();
+                runtime_env
+            }
+            None => RuntimeEnv::default(),
+        };
+
+        let config_env = match app_data.config.analytic_profile_type {
+            Some(AnalyticProfileType::Small) => SessionConfig::new()
+                .with_batch_size(512)
+                .with_target_partitions(2),
+            Some(AnalyticProfileType::Large) => SessionConfig::new()
+                .with_target_partitions(8)
+                .with_batch_size(2048),
+            None => SessionConfig::new(),
+        };
+
+        let ctx: SessionContext = create_session(&h, config_env, runtime_env).await?;
+
+        let execute_options = SQLOptions::new()
+            .with_allow_ddl(false)
+            .with_allow_dml(false)
+            .with_allow_statements(false);
+
+        log::info!("executing sql query: {}", &sql);
+        let start_time = Instant::now();
+        let asyncdf = ctx.sql_with_options(&sql, execute_options);
+        let df = asyncdf.await?;
+
+        let result = timeout(
+            app_data.config.timeout_to_execute_query,
+            df.execute_stream(),
+        )
+        .await;
+
+        let response = match result {
+            Ok(Ok(batches)) => {
+                // success
+
+                log::debug!("dataframe created, collecting");
+
+                log::debug!("streaming content");
+                let stream = stream_recordbatch(batches, app_data.config.timeout_to_stream);
+
+                use futures_util::stream::StreamExt;
+                let guarded_stream = stream.map(move |item| {
+                    let _keep_permit = &semaphore_permit;
+                    item
+                });
+
+                let response = HttpResponseBuilder::new(StatusCode::OK)
+                    // .append_header(("Content-Type", "plain/text"))
+                    .streaming(guarded_stream);
+
+                log::info!(
+                    "query executed in {} seconds, starting streaming",
+                    start_time.elapsed().as_secs_f64()
+                );
+                response
+            }
+            Ok(Err(e)) => {
+                // query failed
+                log::error!("error, query failed: {}", e);
+                return Err(HttpProcessingError {
+                    name: format!("error, query failed: {}", e).into(),
+                })
+                .into();
             }
             Err(e) => {
-                max_attempts -= 1;
-                if max_attempts < 0 {
-                    return Err(HttpProcessingError {
-                        name: "error, no available slots for simultaneous queries".into(),
-                    })
-                    .into();
-                }
+                // timeout hit
+                // query future is dropped -> execution stops
                 log::error!(
-                    "error, on aquiring slot for simultaneous queries: {}, remaining attempts: {}",
-                    e,
-                    max_attempts
+                    "error, query timed out after {} seconds: {}",
+                    app_data.config.timeout_to_execute_query.as_secs(),
+                    e
                 );
-                tokio::time::sleep(TIMEOUT_TO_ACQUIRE_SLOT).await;
+                return Err(HttpProcessingError {
+                    name: format!(
+                        "error, query timed out after {} seconds: {}",
+                        app_data.config.timeout_to_execute_query.as_secs(),
+                        e
+                    )
+                    .into(),
+                })
+                .into();
             }
-        }
+        };
+
+        // release the semaphore
+
+        return Ok(response);
+    } else {
+        return Err("error, too many requests".into());
     }
-
-    assert!(d.is_some());
-    let h: Arc<History> = d.unwrap().history_db.clone();
-
-    // implementation
-    log::debug!("creating session");
-
-    let runtime_env = match app_data.config.analytic_profile_type {
-        Some(AnalyticProfileType::Small) => {
-            log::debug!("PROFILING : small profile activated");
-            // restrict to using at most 50MB of memory
-            let pool_size = 50 * 1024 * 1024;
-            let runtime_env = RuntimeEnvBuilder::new()
-                .with_memory_pool(Arc::new(GreedyMemoryPool::new(pool_size)))
-                .build()
-                .unwrap();
-
-            runtime_env
-        }
-        Some(AnalyticProfileType::Large) => {
-            // restrict to using at most 1GB of memory
-            let pool_size = 1024 * 1024 * 1024;
-            let runtime_env = RuntimeEnvBuilder::new()
-                .with_memory_pool(Arc::new(GreedyMemoryPool::new(pool_size)))
-                .build()
-                .unwrap();
-            runtime_env
-        }
-        None => RuntimeEnv::default(),
-    };
-
-    let config_env = match app_data.config.analytic_profile_type {
-        Some(AnalyticProfileType::Small) => SessionConfig::new()
-            .with_batch_size(512)
-            .with_target_partitions(2),
-        Some(AnalyticProfileType::Large) => SessionConfig::new()
-            .with_target_partitions(8)
-            .with_batch_size(2048),
-        None => SessionConfig::new(),
-    };
-
-    let ctx: SessionContext = create_session(&h, config_env, runtime_env).await?;
-
-    let execute_options = SQLOptions::new()
-        .with_allow_ddl(false)
-        .with_allow_dml(false)
-        .with_allow_statements(false);
-
-    log::info!("executing sql query: {}", &sql);
-    let start_time = Instant::now();
-    let asyncdf = ctx.sql_with_options(&sql, execute_options);
-    let df = asyncdf.await?;
-
-    let result = 
-         timeout(app_data.config.timeout_to_execute_query, df.execute_stream()).await;
-
-    let response = match result {
-        Ok(Ok(batches)) => {
-            // success
-
-            log::debug!("dataframe created, collecting");
-
-            log::debug!("streaming content");
-            let stream = stream_recordbatch(batches, app_data.config.timeout_to_stream);
-
-            let response = HttpResponseBuilder::new(StatusCode::OK)
-                // .append_header(("Content-Type", "plain/text"))
-                .streaming(stream);
-            
-            log::info!("query executed in {} seconds, starting streaming", start_time.elapsed().as_secs_f64());
-            response
-        }
-        Ok(Err(e)) => {
-            // query failed
-            log::error!("error, query failed: {}", e);
-            return Err(HttpProcessingError {
-                name: format!("error, query failed: {}", e).into(),
-            })
-            .into()
-        }
-        Err(e) => {
-            // timeout hit
-            // query future is dropped -> execution stops
-            log::error!("error, query timed out after {} seconds: {}", app_data.config.timeout_to_execute_query.as_secs(), e);
-            return Err(HttpProcessingError {
-                name: format!("error, query timed out after {} seconds: {}", app_data.config.timeout_to_execute_query.as_secs(), e).into(),
-            })  
-            .into()
-        }
-    };
-
-     // release the semaphore
-     drop(semaphore_permit);
-
-    return Ok(response);
 }
 
 // start the server
@@ -363,9 +373,13 @@ pub async fn server_start(config: HttpServerConfig, history_db: &Arc<History>) {
     let addr = SocketAddr::from(config.v4_binding.clone());
     let local_history_db = history_db.clone();
 
-    let query_endpoint = Data {
-        history_db: local_history_db,
-        simultaneous_queries: Arc::new(Semaphore::new(config.simultaneous_queries)),
+    // Initialize the static semaphore
+    CONCURRENT_REQUESTS_SEMAPHORE
+        .set(Arc::new(Semaphore::new(config.simultaneous_queries)))
+        .expect("semaphore already initialized");
+
+    let query_endpoint = AppData {
+        history_db: Some(local_history_db),
         config: Arc::new(config),
     };
 
@@ -380,7 +394,7 @@ pub async fn server_start(config: HttpServerConfig, history_db: &Arc<History>) {
 
         let cors = Cors::permissive();
 
-        let local_query: Data = query_endpoint.clone();
+        let local_query: AppData = query_endpoint.clone();
         App::new()
             .app_data(local_query)
             .wrap(middleware::DefaultHeaders::new().add(("X-Version", "0.2")))
