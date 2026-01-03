@@ -17,7 +17,7 @@ use std::{
     process::Output,
     sync::Arc,
     task::{Context, Poll},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use tokio::{sync::Semaphore, time::timeout};
@@ -115,6 +115,7 @@ pub struct HttpServerConfig {
     pub max_attempts_to_acquire_slot: usize,
     pub timeout_to_acquire_slot: Duration,
     pub timeout_to_execute_query: Duration,
+    pub timeout_to_stream: Duration, // Maximum time allowed for streaming response
     pub analytic_profile_type: Option<AnalyticProfileType>,
 }
 
@@ -127,10 +128,24 @@ struct Data {
 
 fn stream_recordbatch<S: Stream<Item = Result<RecordBatch, DataFusionError>>>(
     input: S,
+    timeout_duration: Duration,
 ) -> impl Stream<Item = Result<Bytes, actix_web::Error>> {
     stream! {
             let mut first = true;  // for headers
-            for await value in input {
+            let stream_start = Instant::now();
+            
+            for await value_result in input {
+                // Check if we've exceeded the timeout
+                if stream_start.elapsed() > timeout_duration {
+                    log::warn!("Stream timeout exceeded after {:?}, stopping stream", timeout_duration);
+                    let timeout_error = HttpProcessingError {
+                        name: format!("Stream timeout exceeded after {} seconds", timeout_duration.as_secs()).into(),
+                    };
+                    yield Err(timeout_error.into());
+                    break;
+                }
+                
+                let value = value_result;
 
                 yield match value {
                     Ok(r) => {
@@ -172,32 +187,32 @@ fn stream_recordbatch<S: Stream<Item = Result<RecordBatch, DataFusionError>>>(
     }
 }
 
-async fn create_response(elements: &Vec<RecordBatch>) -> Result<Bytes, HttpProcessingError> {
-    let buf = BufWriter::new(Vec::new());
-    let mut writer = arrow::csv::Writer::new(buf);
+// async fn create_response(elements: &Vec<RecordBatch>) -> Result<Bytes, HttpProcessingError> {
+//     let buf = BufWriter::new(Vec::new());
+//     let mut writer = arrow::csv::Writer::new(buf);
 
-    for value in elements {
-        match writer.write(value) {
-            Err(e) => {
-                let msg = format!("erreur in fetching : {}", e);
-                let new_error = HttpProcessingError { name: msg.into() };
-                log::error!("{}", new_error);
-                return Err(new_error.into());
-            }
-            Ok(_) => {}
-        }
-    }
-    match writer.into_inner().into_inner() {
-        // this flush
-        Ok(b) => Ok(Bytes::from(b)),
-        Err(e) => {
-            let msg = format!("erreur in fetching : {}", e);
-            let new_error = HttpProcessingError { name: msg.into() };
-            log::error!("{}", new_error);
-            Err(new_error.into())
-        }
-    }
-}
+//     for value in elements {
+//         match writer.write(value) {
+//             Err(e) => {
+//                 let msg = format!("erreur in fetching : {}", e);
+//                 let new_error = HttpProcessingError { name: msg.into() };
+//                 log::error!("{}", new_error);
+//                 return Err(new_error.into());
+//             }
+//             Ok(_) => {}
+//         }
+//     }
+//     match writer.into_inner().into_inner() {
+//         // this flush
+//         Ok(b) => Ok(Bytes::from(b)),
+//         Err(e) => {
+//             let msg = format!("erreur in fetching : {}", e);
+//             let new_error = HttpProcessingError { name: msg.into() };
+//             log::error!("{}", new_error);
+//             Err(new_error.into())
+//         }
+//     }
+// }
 
 // usage example :
 // http://localhost:3000/sql/select%20year,month,day,topic,timestamp%20from%20history%20where%20topic%20=%20'home%2fesp13%2factuators%2fledstrip';
@@ -222,7 +237,7 @@ async fn sql_query(
         let result = semaphore.acquire().await;
         match result {
             Ok(_permit) => {
-                log::info!("acquired semaphore {}", _permit.num_permits());
+                log::debug!("acquired semaphore {}", _permit.num_permits());
                 semaphore_permit = _permit;
                 break;
             }
@@ -252,8 +267,9 @@ async fn sql_query(
 
     let runtime_env = match app_data.config.analytic_profile_type {
         Some(AnalyticProfileType::Small) => {
-            // restrict to using at most 100MB of memory
-            let pool_size = 100 * 1024 * 1024;
+            log::debug!("PROFILING : small profile activated");
+            // restrict to using at most 50MB of memory
+            let pool_size = 50 * 1024 * 1024;
             let runtime_env = RuntimeEnvBuilder::new()
                 .with_memory_pool(Arc::new(GreedyMemoryPool::new(pool_size)))
                 .build()
@@ -291,6 +307,7 @@ async fn sql_query(
         .with_allow_statements(false);
 
     log::info!("executing sql query: {}", &sql);
+    let start_time = Instant::now();
     let asyncdf = ctx.sql_with_options(&sql, execute_options);
     let df = asyncdf.await?;
 
@@ -304,12 +321,13 @@ async fn sql_query(
             log::debug!("dataframe created, collecting");
 
             log::debug!("streaming content");
-            let stream = stream_recordbatch(batches);
+            let stream = stream_recordbatch(batches, app_data.config.timeout_to_stream);
 
             let response = HttpResponseBuilder::new(StatusCode::OK)
                 // .append_header(("Content-Type", "plain/text"))
                 .streaming(stream);
-           
+            
+            log::info!("query executed in {} seconds, starting streaming", start_time.elapsed().as_secs_f64());
             response
         }
         Ok(Err(e)) => {

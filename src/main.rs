@@ -532,7 +532,7 @@ async fn start(
                             let process_statistics =
                                 process::get_process_statistics(current_process_pid);
                             if let Ok(process_statistics) = process_statistics {
-                                info!("process statistics: {:?}", process_statistics);
+                                debug!("process statistics: {:?}", process_statistics);
                                 // serialize to json, in mqtt format
                                 if let Ok(json_data) = serde_json::to_string(&process_statistics) {
                                     let mut pprocess_statistics = PublishOpts::new(
@@ -629,11 +629,20 @@ struct Opt {
 
     #[structopt(
         long,
-        default_value = "30",
+        default_value = "10",
         name = "analyticTimeoutToExecuteQuery",
         help = "Timeout to execute query in seconds"
     )]
     analytic_timeout_to_execute_query: u64,
+
+
+    #[structopt(
+        long,
+        default_value = "60",
+        name = "analyticTimeoutToStream",
+        help = "Timeout to stream response in seconds"
+    )]
+    analytic_timeout_to_stream: u64,
 
     #[structopt(
         long,
@@ -728,7 +737,9 @@ async fn main() {
 
 
     let analytic_timeout_to_execute_query = Duration::from_secs(opt.analytic_timeout_to_execute_query);
-    info!("analytic sql timeout : {} seconds", analytic_timeout_to_execute_query.as_secs());
+    info!("Analytic sql timeout : {} seconds", analytic_timeout_to_execute_query.as_secs());
+    let analytic_timeout_to_stream = Duration::from_secs(opt.analytic_timeout_to_stream);
+    info!("Analytic stream timeout : {} seconds", analytic_timeout_to_stream.as_secs());
 
     // handling commands
     if let Some(export_history_to_parse) = &opt.command_archive_history_date {
@@ -811,9 +822,12 @@ async fn main() {
             max_attempts_to_acquire_slot: 100,
             timeout_to_acquire_slot: Duration::from_millis(100),
             timeout_to_execute_query: analytic_timeout_to_execute_query,
+            timeout_to_stream: analytic_timeout_to_stream, 
             analytic_profile_type: if opt.analytic_small_profile {
+                log::debug!("PROFILING : small profile activated");
                 Some(httpserver::AnalyticProfileType::Small)
             } else {
+                log::debug!("PROFILING : no profile activated");
                 None
             },
         };
