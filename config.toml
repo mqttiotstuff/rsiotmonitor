@@ -1,8 +1,8 @@
 # Test config for development
 
-#[http]
-#bind="0.0.0.0"
-#port=7880
+[http]
+bind="0.0.0.0"
+port=7880
 
 [mqtt]
 serverAddress="mqtt://127.0.0.1:1884"

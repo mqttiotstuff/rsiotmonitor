@@ -47,7 +47,7 @@ db-key = "0.0.5"
 
 mlua = { version = "0.10", features = ["lua54", "vendored"] }
 
-parquet="54.2.1"
+parquet="55.0.0"
 
 tokio-cron-scheduler = "0.13"
 
@@ -55,10 +55,10 @@ tokio-cron-scheduler = "0.13"
 # futures = { version = "0.3", default-features = false, features = ["alloc"] }
 # tonic = { version = "0.11.0", default-features = false, features = ["transport", "codegen", "prost"] }
 
-datafusion = "45"
-datafusion-physical-expr = "45"
-datafusion-expr = "45"
-arrow = "54"
+datafusion = "47"
+datafusion-physical-expr = "47"
+datafusion-expr = "47"
+arrow = "55"
 
 async-trait = "0.1.73"
 

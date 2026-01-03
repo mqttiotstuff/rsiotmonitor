@@ -23,7 +23,9 @@ use tokio::{net::TcpListener, time::Duration};
 pub use rsiotmonitor::history::*;
 
 use rsiotmonitor::{process::ProcessIterator, *};
-use std::{error::Error as RustError, io, path::PathBuf, sync::Arc, time::SystemTime};
+use std::{
+    error::Error as RustError, io, net::Ipv4Addr, path::PathBuf, sync::Arc, time::SystemTime,
+};
 use tokio_cron_scheduler::{Job, JobScheduler};
 
 use crate::mqtt_utils::*;
@@ -273,6 +275,7 @@ fn wrap_already_exists_processes(config: IOTMonitor) -> IOTMonitor {
 use chrono::DateTime;
 use chrono::{offset::Utc, Datelike, Days};
 
+// batch creation of the history archive
 fn export_history_day_from_datetime(
     hist_database: Arc<History>,
     triggered_date: DateTime<Utc>,
@@ -559,20 +562,35 @@ async fn start(config: IOTMonitor) -> Result<(), Box<dyn RustError>> {
 struct Opt {
     /// Activate debug mode
     // short and long flags (-d, --debug) will be deduced from the field's name
-    #[structopt(long)]
+    #[structopt(long, help = "Activate debug mode")]
     debug: bool,
 
-    #[structopt(long, name = "embeddedMqtt")]
+    #[structopt(long, name = "embeddedMqtt", help = "Activate embedded mqtt server")]
     embedded_mqtt: bool,
 
-    #[structopt(long, default_value = "0.0.0.0:1884", name = "embeddedMqttBindOptions")]
+    #[structopt(
+        long,
+        default_value = "0.0.0.0:1884",
+        name = "embeddedMqttBindOptions",
+        help = "Bind options for embedded mqtt server"
+    )]
     embedded_mqtt_bind_options: String,
 
-    #[structopt(long)]
-    disable: Option<String>,
+    #[structopt(
+        long,
+        default_value = "0.0.0.0",
+        name = "httpServerAddress",
+        help = "Address for http server"
+    )]
+    http_server_address: String,
 
-    #[structopt(long)]
-    enable: Option<String>,
+    #[structopt(
+        long,
+        default_value = "3000",
+        name = "httpServerPort",
+        help = "Port for http server"
+    )]
+    http_server_port: u16,
 
     #[structopt(long)]
     command_archive_history_date: Option<String>,
@@ -581,6 +599,7 @@ struct Opt {
     command_create_snapshot: Option<String>,
 }
 
+/// TCP server loop
 async fn tcp_server_loop(
     broker_tx: tokio::sync::mpsc::Sender<BrokerMessage>,
     bind_options: String,
@@ -596,19 +615,17 @@ async fn tcp_server_loop(
     }
 }
 
-/// Websocket tcp address TODO: make this configurable
+/// Websocket tcp address
 const WEBSOCKET_TCP_LISTENER_ADDR: &str = "0.0.0.0:8088";
 
 async fn websocket_server_loop(
     broker_tx: tokio::sync::mpsc::Sender<BrokerMessage>,
 ) -> io::Result<()> {
+    let listener = TcpListener::bind(WEBSOCKET_TCP_LISTENER_ADDR).await?;
     info!(
         "MQTTServer Listening on {} for websocket",
         WEBSOCKET_TCP_LISTENER_ADDR
     );
-
-    let listener = TcpListener::bind(WEBSOCKET_TCP_LISTENER_ADDR).await?;
-
     loop {
         let (socket, addr) = listener.accept().await?;
         debug!("Client {} connected (websocket)", addr);
@@ -645,9 +662,19 @@ async fn launch_mqtt_server(opt: Opt) -> Result<(), Box<dyn std::error::Error>> 
 /// main procedure
 #[tokio::main]
 async fn main() {
-    env_logger::init();
+    if let Err(e) =
+        env_logger::try_init_from_env(env_logger::Env::default().default_filter_or("info"))
+    {
+        log::error!("Error initializing logger: {}", e);
+    }
 
     let opt = Opt::from_args();
+
+    let http_server_address_str = opt.http_server_address.clone();
+    let http_server_port = opt.http_server_port;
+    let http_server_address = http_server_address_str
+        .parse::<Ipv4Addr>()
+        .expect("error while parsing the http server address, must be a valid ipv4 address");
 
     // handling commands
     if let Some(export_history_to_parse) = &opt.command_archive_history_date {
@@ -656,7 +683,9 @@ async fn main() {
             export_history_to_parse
         );
 
-        let config = crate::config::read_configuration().await.unwrap();
+        let config = crate::config::read_configuration()
+            .await
+            .expect("error while reading the configuration");
         if let Some(history) = config.history {
             let day: DateTime<Utc> = DateTime::parse_from_rfc3339(export_history_to_parse)
                 .expect("error while parsing the date, date must be passed as iso860, eg: 2023-09-17T00:00:00Z")
@@ -671,7 +700,16 @@ async fn main() {
     }
 
     if let Some(export_snapshot) = &opt.command_create_snapshot {
-        let config = crate::config::read_configuration().await.unwrap();
+        info!(
+            "handling snapshot from history on date : {}",
+            export_snapshot
+        );
+        let config = crate::config::read_configuration()
+            .await
+            .unwrap_or_else(|e| {
+                log::error!("Error reading configuration: {}", e);
+                panic!("error while reading the configuration: {:?}", e);
+            });
 
         if let Some(history) = config.history {
             info!("exporting history");
@@ -696,14 +734,21 @@ async fn main() {
         });
     }
 
-    let config = crate::config::read_configuration().await.unwrap();
+    let config = crate::config::read_configuration().await.unwrap_or_else(|e| {
+        log::error!("Error reading configuration: {}", e);
+        panic!("error while reading the configuration: {:?}", e);
+    });
 
     debug!("Starting with config : {:?}\n", &config);
 
-    
     let history_ref = (&config.history.clone().unwrap()).clone();
     let _http_server = tokio::task::spawn(async move {
-        httpserver::server_start(([0, 0, 0, 0], 3000), &history_ref ).await;
+        log::info!(
+            "Starting http server on {}:{}",
+            http_server_address,
+            http_server_port
+        );
+        httpserver::server_start((http_server_address, http_server_port), &history_ref).await;
     });
 
     start(config).await.unwrap();

@@ -22,18 +22,23 @@ use std::{
 use derivative::Derivative;
 use history::History;
 
+/// 
 /// General iotmonitor configuration, with mqtt configuration and monitored device or agents
+/// 
 #[derive(Derivative)]
 #[derivative(Debug)]
 pub struct IOTMonitor {
     /// broker connection properties
     pub mqtt_config: crate::config::MqttConfig,
 
+    /// history topic
     pub history_topic: Option<String>,
 
+    /// history database
     #[derivative(Debug = "ignore")]
     pub history: Option<Arc<History>>,
 
+    /// state connection
     #[derivative(Debug = "ignore")]
     pub state_connection: Option<Arc<sqlite::ConnectionThreadSafe>>,
 

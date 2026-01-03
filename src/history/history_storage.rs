@@ -63,11 +63,16 @@ impl fmt::Display for HistoryError {
 
 impl Error for HistoryError {}
 
+/// 
+/// History database structure
+/// 
 pub struct History {
+    /// database handle
     pub database: Arc<Database>,
 }
 
 impl History {
+
     /// init the history, and open the archive database
     pub fn init() -> Result<Arc<History>, Box<dyn Error>> {
         let path = Path::new("history");
@@ -127,15 +132,18 @@ impl History {
         });
     }
 
-    // export the current database events to a parquet file
+    /// export the current database events to a parquet file
+    /// @param output_file: the path to the output file
+    /// @param date_range: the date range to export
+    /// @param delete_values: if true, delete the values after exporting
+    /// @return the result of the operation
+    /// delete_values: if true, delete the values after exporting
     pub fn export_to_parquet(
         &self,
         output_file: &str,
         date_range: Option<(i64, i64)>,
         delete_values: bool,
     ) -> Result<(), Box<dyn Error>> {
-
-
         let path = Path::new(output_file);
 
         let record_type = "

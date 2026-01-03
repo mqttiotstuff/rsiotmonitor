@@ -85,6 +85,8 @@ pub fn client_from_args(args: &MqttConfig) -> mqtt_async_client::Result<Client> 
         // };
 
         if let Some(c) = cc {
+            // add secure options for clients
+            log::debug!("Adding secure options for client");
             b.set_tls_client_config(c);
         }
     }

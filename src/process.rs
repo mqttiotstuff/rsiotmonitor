@@ -83,6 +83,7 @@ impl ProcessIterator {
     }
 }
 
+/// iterator for the process iterator
 impl Iterator for ProcessIterator {
     type Item = ProcessInformation;
 

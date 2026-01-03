@@ -90,6 +90,8 @@ impl From<Box<dyn std::error::Error>> for HttpProcessingError {
 // Use default implementation for `error_response()` method
 impl error::ResponseError for HttpProcessingError {}
 
+///////////////////////////////////////////////////////////////////////////////////////////
+
 #[derive(Clone)]
 struct Data {
     pub history_db: Arc<History>,
@@ -209,15 +211,12 @@ async fn sql_query(
 
     return Ok(response);
 
-    // let elements = df.collect().await?;
-    // log::info!("end of execution of {}", &sql);
-
-    // let response = HttpResponseBuilder::new(StatusCode::OK).body(create_response(&elements).await?);
-    // return Ok(response);
-
 
 }
 
+// start the server
+// binding is the address and port to bind to
+// history_db is the history database
 pub async fn server_start<I>(binding: (I, u16), history_db: &Arc<History>)
 where
     I: Into<IpAddr>,

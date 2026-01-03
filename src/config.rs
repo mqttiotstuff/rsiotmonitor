@@ -74,6 +74,7 @@ pub async fn read_configuration() -> mqtt_async_client::Result<IOTMonitor> {
     let mut mqtt_config = MqttConfig::default();
 
     use std::fs;
+    log::info!("Reading configuration from config.toml");
     let contents = fs::read_to_string("config.toml").expect("cannot read config.toml");
 
     let t = Toml::new(&contents);
@@ -84,8 +85,10 @@ pub async fn read_configuration() -> mqtt_async_client::Result<IOTMonitor> {
         let mut m = acc;
         if let toml_parse::Value::Table(table) = i {
             if table.header() == "mqtt" {
+                log::debug!("Reading mqtt configuration");
                 crate::config::read_mqtt_config_table(&mut mqtt_config, table);
             } else if table.header() == "history" {
+                log::debug!("Reading history configuration");
                 for kv in table.items() {
                     if let Some(keyname) = kv.key() {
                         if let Value::StrLit(s) = kv.value() {
@@ -97,6 +100,7 @@ pub async fn read_configuration() -> mqtt_async_client::Result<IOTMonitor> {
                 }
             } else {
                 // create MonitorInfo
+                log::debug!("Creating MonitorInfo for {}", table.header());
                 let mut name: String = table.header().into();
                 let mut isagent: bool = false;
 
@@ -134,10 +138,15 @@ pub async fn read_configuration() -> mqtt_async_client::Result<IOTMonitor> {
     let mut opt_history: Option<Arc<History>> = None;
     if let Some(_topics_history) = history_topic.clone() {
         info!("history initialization");
-        opt_history = Some(History::init().unwrap());
+        opt_history = Some(History::init().unwrap_or_else(|e| {
+            log::error!("Error initializing history: {}", e);
+            panic!("error while initializing history: {:?}", e);
+        }));
     }
 
     let iotmonitor = IOTMonitor::new(mqtt_config, hash, history_topic, opt_history);
+
+    log::debug!("IOTMonitor created: {:?}", iotmonitor);
 
     Ok(iotmonitor)
 }
@@ -151,6 +160,7 @@ pub fn update_monitorinfo_from_config_table(
         if let Some(keyname) = kv.key() {
             if let Value::StrLit(s) = kv.value() {
                 match keyname {
+                    // read keys from configuration : watchTimeOut, helloTopic, watchTopics, stateTopics
                     // watchTimeOut : watch dog for alive state, when the timeout is reached without and interactions on watchTopics, then iotmonitor trigger an expire message for the device
                     // helloTopic : the topic to observe to welcome the device. This topic trigger the state recovering for the device and agents. IotMonitor, resend the previous stored stateTopics
                     // watchTopics : the topic pattern to observe to know the device is alive
@@ -223,7 +233,7 @@ pub fn read_mqtt_config_table(config: &mut MqttConfig, table: &toml_parse::Table
                         config.username = Some(s.clone());
                     }
                     s => {
-                        panic!("unknown mqtt section property : {}", s);
+                        panic!("unknown mqtt section property : {}, only serverAddress, baseTopic, password, clientid, user are allowed", s);
                     }
                 }
             }
