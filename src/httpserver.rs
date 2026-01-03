@@ -100,10 +100,27 @@ const MAX_SIMULTANEOUS_QUERIES: usize = 2;
 const MAX_ATTEMPTS_TO_ACQUIRE_SLOT: usize = 100;
 const TIMEOUT_TO_ACQUIRE_SLOT: Duration = Duration::from_millis(100);
 
+
+#[derive(Debug)]
+pub enum AnalyticProfileType {
+    Small,
+    Large,
+}
+
+pub struct HttpServerConfig {
+    pub v4_binding: (IpAddr, u16),
+    pub simultaneous_queries: usize,
+    pub max_attempts_to_acquire_slot: usize,
+    pub timeout_to_acquire_slot: Duration,
+    pub analytic_profile_type: Option<AnalyticProfileType>,
+}
+
+
 #[derive(Clone)]
 struct Data {
     pub history_db: Arc<History>,
     pub simultaneous_queries: Arc<Semaphore>,
+    pub config: Arc<HttpServerConfig>,
 }
 
 fn stream_recordbatch<S: Stream<Item = Result<RecordBatch, DataFusionError>>>(
@@ -194,8 +211,10 @@ async fn sql_query(
         return Err("error, no historical data found".into());
     }
 
-    let semaphore = d.unwrap().simultaneous_queries.clone();
-    let mut max_attempts :i32 = MAX_ATTEMPTS_TO_ACQUIRE_SLOT as i32;
+    let app_data = d.unwrap();
+
+    let semaphore = app_data.simultaneous_queries.clone();
+    let mut max_attempts :i32 = app_data.config.max_attempts_to_acquire_slot as i32;
     let mut semaphore_permit;
     loop {
         let result = semaphore.acquire().await;
@@ -236,8 +255,21 @@ async fn sql_query(
     // // Smaller than the default '8192', while still keep the benefit of vectorized execution
     // SET datafusion.execution.batch_size = 1024;
 
-    ctx.sql("SET datafusion.execution.target_partitions = 2").await?;
-    ctx.sql("SET datafusion.execution.batch_size = 512").await?;
+
+    if let Some(analytic_profile_type) = &app_data.config.analytic_profile_type {
+        log::debug!("setting analytic profile type: {:?}", analytic_profile_type);
+        match analytic_profile_type {
+            AnalyticProfileType::Small => {
+                ctx.sql("SET datafusion.execution.target_partitions = 2").await?;
+                ctx.sql("SET datafusion.execution.batch_size = 512").await?;
+            }
+            AnalyticProfileType::Large => {
+                ctx.sql("SET datafusion.execution.target_partitions = 8").await?;
+                ctx.sql("SET datafusion.execution.batch_size = 2048").await?;
+            }
+        }
+    }
+
 
     let execute_options = SQLOptions::new()
         .with_allow_ddl(false)
@@ -266,17 +298,16 @@ async fn sql_query(
 // start the server
 // binding is the address and port to bind to
 // history_db is the history database
-pub async fn server_start<I>(binding: (I, u16), history_db: &Arc<History>)
-where
-    I: Into<IpAddr>,
+pub async fn server_start(config: HttpServerConfig, history_db: &Arc<History>)
 {
     // And run our service using `actix`
-    let addr = SocketAddr::from(binding);
+    let addr = SocketAddr::from(config.v4_binding.clone());
     let local_history_db = history_db.clone();
 
     let query_endpoint = Data {
         history_db: local_history_db,
-        simultaneous_queries: Arc::new(Semaphore::new(MAX_SIMULTANEOUS_QUERIES)),
+        simultaneous_queries: Arc::new(Semaphore::new(config.simultaneous_queries)),
+        config: Arc::new(config),
     };
 
     HttpServer::new(move || {

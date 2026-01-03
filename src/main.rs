@@ -592,6 +592,13 @@ struct Opt {
     )]
     http_server_port: u16,
 
+    #[structopt(
+        long,
+        name = "analyticSmallProfile",
+        help = "Analytic Small profile",        
+    )]
+    analytic_small_profile: bool,
+
     #[structopt(long)]
     command_archive_history_date: Option<String>,
 
@@ -748,7 +755,17 @@ async fn main() {
             http_server_address,
             http_server_port
         );
-        httpserver::server_start((http_server_address, http_server_port), &history_ref).await;
+
+        let http_server_config = httpserver::HttpServerConfig {
+            v4_binding: (http_server_address.into(), http_server_port),
+            simultaneous_queries: 2,
+            max_attempts_to_acquire_slot: 100,
+            timeout_to_acquire_slot: Duration::from_millis(100),
+            analytic_profile_type: if opt.analytic_small_profile { Some(httpserver::AnalyticProfileType::Small) } else { None },
+        };
+
+
+        httpserver::server_start(http_server_config, &history_ref).await;
     });
 
     start(config).await.unwrap();
