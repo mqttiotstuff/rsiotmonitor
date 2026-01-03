@@ -17,7 +17,10 @@ use std::{
     process::Output,
     sync::Arc,
     task::{Context, Poll},
+    time::Duration,
 };
+
+use tokio::sync::Semaphore;
 
 use crate::history::{create_session, History};
 
@@ -91,10 +94,16 @@ impl From<Box<dyn std::error::Error>> for HttpProcessingError {
 impl error::ResponseError for HttpProcessingError {}
 
 ///////////////////////////////////////////////////////////////////////////////////////////
+// server implementation
+
+const MAX_SIMULTANEOUS_QUERIES: usize = 2;
+const MAX_ATTEMPTS_TO_ACQUIRE_SLOT: usize = 100;
+const TIMEOUT_TO_ACQUIRE_SLOT: Duration = Duration::from_millis(100);
 
 #[derive(Clone)]
 struct Data {
     pub history_db: Arc<History>,
+    pub simultaneous_queries: Arc<Semaphore>,
 }
 
 fn stream_recordbatch<S: Stream<Item = Result<RecordBatch, DataFusionError>>>(
@@ -185,33 +194,73 @@ async fn sql_query(
         return Err("error, no historical data found".into());
     }
 
+    let semaphore = d.unwrap().simultaneous_queries.clone();
+    let mut max_attempts :i32 = MAX_ATTEMPTS_TO_ACQUIRE_SLOT as i32;
+    let mut semaphore_permit;
+    loop {
+        let result = semaphore.acquire().await;
+        match result {
+            Ok(_permit) => {
+                log::info!("acquired semaphore {}", _permit.num_permits());
+                semaphore_permit = _permit;
+                break;
+            }
+            Err(e) => {
+                max_attempts -= 1;
+                if max_attempts < 0 {
+                    return Err(HttpProcessingError {
+                        name: "error, no available slots for simultaneous queries".into(),
+                    })
+                    .into();
+                }
+                log::error!(
+                    "error, on aquiring slot for simultaneous queries: {}, remaining attempts: {}",
+                    e,
+                    max_attempts
+                );
+                tokio::time::sleep(TIMEOUT_TO_ACQUIRE_SLOT).await;
+            }
+        }
+    }
+
     assert!(d.is_some());
     let h: Arc<History> = d.unwrap().history_db.clone();
 
     // implementation
     log::debug!("creating session");
     let ctx: SessionContext = create_session(&h).await?;
+
+    //  for low memory usage,
+    // // Query still gets parallelized, but each partition will have more memory to use
+    // SET datafusion.execution.target_partitions = 4;
+    // // Smaller than the default '8192', while still keep the benefit of vectorized execution
+    // SET datafusion.execution.batch_size = 1024;
+
+    ctx.sql("SET datafusion.execution.target_partitions = 2").await?;
+    ctx.sql("SET datafusion.execution.batch_size = 512").await?;
+
     let execute_options = SQLOptions::new()
         .with_allow_ddl(false)
         .with_allow_dml(false)
         .with_allow_statements(false);
 
-    log::info!("execute sql {}", &sql);
+    log::info!("executing sql query: {}", &sql);
     let asyncdf = ctx.sql_with_options(&sql, execute_options);
     let df = asyncdf.await?;
-    log::info!("dataframe {:?} created, collecting", &df);
+    log::debug!("dataframe {:?} created, collecting", &df);
     let dfcontent = df.execute_stream().await?;
 
-    log::info!("streaming content");
+    log::debug!("streaming content");
     let stream = stream_recordbatch(dfcontent);
 
     let response = HttpResponseBuilder::new(StatusCode::OK)
         // .append_header(("Content-Type", "plain/text"))
         .streaming(stream);
 
+    // release the semaphore
+    drop(semaphore_permit);
+
     return Ok(response);
-
-
 }
 
 // start the server
@@ -227,6 +276,7 @@ where
 
     let query_endpoint = Data {
         history_db: local_history_db,
+        simultaneous_queries: Arc::new(Semaphore::new(MAX_SIMULTANEOUS_QUERIES)),
     };
 
     HttpServer::new(move || {
