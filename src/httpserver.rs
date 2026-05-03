@@ -408,11 +408,10 @@ async fn sql_query(
 
 // start the server
 // binding is the address and port to bind to
-// history_db is the history database
-pub async fn server_start(config: HttpServerConfig, history_db: &Arc<History>) {
+/// `history_db` is optional: the server still listens so `/sql` can respond when history is configured later; without history, queries return an error.
+pub async fn server_start(config: HttpServerConfig, history_db: Option<Arc<History>>) {
     // And run our service using `actix`
     let addr = SocketAddr::from(config.v4_binding.clone());
-    let local_history_db = history_db.clone();
 
     // Initialize the static semaphore
     CONCURRENT_REQUESTS_SEMAPHORE
@@ -420,7 +419,7 @@ pub async fn server_start(config: HttpServerConfig, history_db: &Arc<History>) {
         .expect("semaphore already initialized");
 
     let query_endpoint = AppData {
-        history_db: Some(local_history_db),
+        history_db,
         config: Arc::new(config),
     };
 

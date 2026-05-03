@@ -1,12 +1,17 @@
 # Test config for development
 
+# Omit [http] entirely (or leave bind/port unset) to disable the analytic HTTP server unless you pass --http-server-*.
 [http]
 bind="0.0.0.0"
 port=7880
 
 [analytic]
-# Arrow Flight SQL (ADBC / JDBC); omit both here and on CLI --flight-sql-bind to disable
+# CLI flags override these entries when passed (see --help).
 # flightSqlBind="0.0.0.0:50051"
+# timeoutToExecuteQuery=60
+# timeoutToStream=600
+# maxSimultaneousQueries=5
+# smallProfile=false
 
 [mqtt]
 serverAddress="mqtt://127.0.0.1:1884"

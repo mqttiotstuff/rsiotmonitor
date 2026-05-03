@@ -42,6 +42,21 @@ pub struct IOTMonitor {
     /// Arrow Flight SQL bind address from `config.toml` `[analytic]` `flightSqlBind`. Overridden by `--flight-sql-bind` when that flag is set.
     pub flight_sql_bind: Option<String>,
 
+    /// HTTP bind address from `config.toml` `[http]` `bind`. Overridden by `--http-server-address` when set.
+    pub http_bind: Option<String>,
+
+    /// HTTP port from `config.toml` `[http]` `port`. Overridden by `--http-server-port` when set.
+    pub http_port: Option<u16>,
+
+    /// `[analytic]` `timeoutToExecuteQuery` (seconds). Overridden by CLI when that flag is passed.
+    pub analytic_timeout_execute_secs: Option<u64>,
+    /// `[analytic]` `timeoutToStream` (seconds). Overridden by CLI when set.
+    pub analytic_timeout_stream_secs: Option<u64>,
+    /// `[analytic]` `maxSimultaneousQueries`. Overridden by CLI when set.
+    pub analytic_max_simultaneous_queries: Option<usize>,
+    /// `[analytic]` `smallProfile`. Overridden by CLI `--analytic-small-profile` / `--analytic-small-profile false` when used.
+    pub analytic_small_profile: Option<bool>,
+
     /// state connection
     #[derivative(Debug = "ignore")]
     pub state_connection: Option<Arc<sqlite::ConnectionThreadSafe>>,
@@ -58,6 +73,12 @@ impl IOTMonitor {
         history_topic: Option<String>,
         history: Option<Arc<History>>,
         flight_sql_bind: Option<String>,
+        http_bind: Option<String>,
+        http_port: Option<u16>,
+        analytic_timeout_execute_secs: Option<u64>,
+        analytic_timeout_stream_secs: Option<u64>,
+        analytic_max_simultaneous_queries: Option<usize>,
+        analytic_small_profile: Option<bool>,
     ) -> Self {
         // return the IOTMonitor structure
         IOTMonitor {
@@ -67,6 +88,12 @@ impl IOTMonitor {
             history_topic,
             history,
             flight_sql_bind,
+            http_bind,
+            http_port,
+            analytic_timeout_execute_secs,
+            analytic_timeout_stream_secs,
+            analytic_max_simultaneous_queries,
+            analytic_small_profile,
         }
     }
 

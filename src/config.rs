@@ -81,6 +81,12 @@ pub async fn read_configuration() -> mqtt_async_client::Result<IOTMonitor> {
 
     let mut history_topic: Option<String> = None;
     let mut flight_sql_bind: Option<String> = None;
+    let mut http_bind: Option<String> = None;
+    let mut http_port: Option<u16> = None;
+    let mut analytic_timeout_execute_secs: Option<u64> = None;
+    let mut analytic_timeout_stream_secs: Option<u64> = None;
+    let mut analytic_max_simultaneous_queries: Option<usize> = None;
+    let mut analytic_small_profile: Option<bool> = None;
 
     let devices: Vec<Box<MonitoringInfo>> = t.iter().fold(Vec::new(), |acc, i| {
         let mut m = acc;
@@ -90,10 +96,17 @@ pub async fn read_configuration() -> mqtt_async_client::Result<IOTMonitor> {
                 crate::config::read_mqtt_config_table(&mut mqtt_config, table);
             } else if table.header() == "http" {
                 log::debug!("Reading http configuration");
-                read_http_config_table(table);
+                read_http_config_table(&mut http_bind, &mut http_port, table);
             } else if table.header() == "analytic" {
                 log::debug!("Reading analytic configuration");
-                read_analytic_config_table(&mut flight_sql_bind, table);
+                read_analytic_config_table(
+                    &mut flight_sql_bind,
+                    &mut analytic_timeout_execute_secs,
+                    &mut analytic_timeout_stream_secs,
+                    &mut analytic_max_simultaneous_queries,
+                    &mut analytic_small_profile,
+                    table,
+                );
             } else if table.header() == "history" {
                 log::debug!("Reading history configuration");
                 for kv in table.items() {
@@ -157,6 +170,12 @@ pub async fn read_configuration() -> mqtt_async_client::Result<IOTMonitor> {
         history_topic,
         opt_history,
         flight_sql_bind,
+        http_bind,
+        http_port,
+        analytic_timeout_execute_secs,
+        analytic_timeout_stream_secs,
+        analytic_max_simultaneous_queries,
+        analytic_small_profile,
     );
 
     log::debug!("IOTMonitor created: {:?}", iotmonitor);
@@ -224,43 +243,104 @@ pub fn read_process_informations_from_config_table(
     monitor_info.associated_process_information = Some(Box::new(additional_process_info));
 }
 
-/// Optional `[http]` settings. `bind` / `port` are reserved for documentation; the HTTP server still uses CLI for address/port today.
-pub fn read_http_config_table(table: &toml_parse::Table) {
+/// `[http]` bind address and port for the analytic HTTP server (CLI overrides when flags are set).
+pub fn read_http_config_table(
+    bind: &mut Option<String>,
+    port: &mut Option<u16>,
+    table: &toml_parse::Table,
+) {
     assert!(table.header() == "http");
     for kv in table.items() {
         if let Some(keyname) = kv.key() {
-            if let Value::StrLit(_) = kv.value() {
-                match keyname {
-                    "bind" | "port" => {
-                        debug!(
-                            "http.{} is present in config.toml; HTTP server still uses CLI for address/port",
-                            keyname
-                        );
+            match keyname {
+                "bind" => {
+                    if let Value::StrLit(s) = kv.value() {
+                        *bind = Some(s.clone());
                     }
-                    _ => debug!("unknown key in [http] section: {}", keyname),
                 }
+                "port" => {
+                    if let Some(p) = http_port_from_value(kv.value()) {
+                        *port = Some(p);
+                    }
+                }
+                _ => debug!("unknown key in [http] section: {}", keyname),
             }
         }
     }
 }
 
-/// Optional `[analytic]` settings (Flight SQL bind, etc.).
+fn http_port_from_value(v: &Value) -> Option<u16> {
+    match v {
+        Value::Int(i) => {
+            if *i >= 0 && *i <= u16::MAX as i64 {
+                Some(*i as u16)
+            } else {
+                None
+            }
+        }
+        Value::StrLit(s) => s.parse().ok(),
+        _ => None,
+    }
+}
+
+/// Optional `[analytic]` settings. Command-line flags override these when provided (see `main`).
 pub fn read_analytic_config_table(
     flight_sql_bind: &mut Option<String>,
+    timeout_execute_secs: &mut Option<u64>,
+    timeout_stream_secs: &mut Option<u64>,
+    max_simultaneous_queries: &mut Option<usize>,
+    small_profile: &mut Option<bool>,
     table: &toml_parse::Table,
 ) {
     assert!(table.header() == "analytic");
     for kv in table.items() {
         if let Some(keyname) = kv.key() {
-            if let Value::StrLit(s) = kv.value() {
-                match keyname {
-                    "flightSqlBind" => {
+            let v = kv.value();
+            match keyname {
+                "flightSqlBind" => {
+                    if let Value::StrLit(s) = v {
                         *flight_sql_bind = Some(s.clone());
                     }
-                    _ => debug!("unknown key in [analytic] section: {}", keyname),
                 }
+                "timeoutToExecuteQuery" => {
+                    if let Some(n) = positive_u64(v) {
+                        *timeout_execute_secs = Some(n);
+                    }
+                }
+                "timeoutToStream" => {
+                    if let Some(n) = positive_u64(v) {
+                        *timeout_stream_secs = Some(n);
+                    }
+                }
+                "maxSimultaneousQueries" => {
+                    if let Some(n) = positive_usize(v) {
+                        *max_simultaneous_queries = Some(n);
+                    }
+                }
+                "smallProfile" => {
+                    if let Value::Bool(b) = v {
+                        *small_profile = Some(*b);
+                    }
+                }
+                _ => debug!("unknown key in [analytic] section: {}", keyname),
             }
         }
+    }
+}
+
+fn positive_u64(v: &Value) -> Option<u64> {
+    match v {
+        Value::Int(i) if *i > 0 => Some(*i as u64),
+        Value::StrLit(s) => s.parse().ok(),
+        _ => None,
+    }
+}
+
+fn positive_usize(v: &Value) -> Option<usize> {
+    match v {
+        Value::Int(i) if *i > 0 && *i <= usize::MAX as i64 => Some(*i as usize),
+        Value::StrLit(s) => s.parse().ok(),
+        _ => None,
     }
 }
 

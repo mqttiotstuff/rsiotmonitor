@@ -610,51 +610,36 @@ struct Opt {
 
     #[structopt(
         long,
-        default_value = "0.0.0.0",
         name = "httpServerAddress",
-        help = "Address for http server"
+        help = "Overrides config.toml [http] bind when set; otherwise use that bind or 0.0.0.0"
     )]
-    http_server_address: String,
+    http_server_address: Option<String>,
 
     #[structopt(
         long,
-        default_value = "3000",
         name = "httpServerPort",
-        help = "Port for http server"
+        help = "Overrides config.toml [http] port when set; otherwise use that port or 3000"
     )]
-    http_server_port: u16,
+    http_server_port: Option<u16>,
 
-    #[structopt(long, name = "analyticSmallProfile", help = "Analytic Small profile")]
-    analytic_small_profile: bool,
+    /// Small analytic profile; overrides `[analytic]` `smallProfile` in config.toml when set (`true` / `false`).
+    #[structopt(long, name = "analyticSmallProfile")]
+    analytic_small_profile: Option<bool>,
 
-    #[structopt(
-        long,
-        default_value = "60",
-        name = "analyticTimeoutToExecuteQuery",
-        help = "Timeout to execute query in seconds"
-    )]
-    analytic_timeout_to_execute_query: u64,
+    /// Overrides `[analytic]` `timeoutToExecuteQuery` in config.toml when set.
+    #[structopt(long, name = "analyticTimeoutToExecuteQuery")]
+    analytic_timeout_to_execute_query: Option<u64>,
 
-    #[structopt(
-        long,
-        default_value = "5",
-        name = "analyticMaxSimultaneousQueries",
-        help = "Maximum simultaneous analytic queries"
-    )]
-    analytic_max_simultaneous_queries: usize,
+    /// Overrides `[analytic]` `maxSimultaneousQueries` in config.toml when set.
+    #[structopt(long, name = "analyticMaxSimultaneousQueries")]
+    analytic_max_simultaneous_queries: Option<usize>,
 
+    /// Overrides `[analytic]` `timeoutToStream` in config.toml when set.
+    #[structopt(long, name = "analyticTimeoutToStream")]
+    analytic_timeout_to_stream: Option<u64>,
 
-    #[structopt(
-        long,
-        default_value = "600",
-        name = "analyticTimeoutToStream",
-        help = "Timeout to stream response in seconds"
-    )]
-    analytic_timeout_to_stream: u64,
-
-    /// Bind address for Arrow Flight SQL (e.g. `0.0.0.0:50051`). When omitted, uses `flightSqlBind`
-    /// from `config.toml` `[analytic]` if set; otherwise Flight SQL is disabled. Passing this flag
-    /// overrides the config file.
+    /// Bind address for Arrow Flight SQL (e.g. `0.0.0.0:50051`). Overrides `[analytic]` `flightSqlBind`
+    /// in config.toml when set; otherwise Flight SQL is disabled unless configured in the file.
     #[structopt(long, name = "flightSqlBind")]
     flight_sql_bind: Option<String>,
 
@@ -743,18 +728,6 @@ async fn main() {
 
     let opt = Opt::from_args();
 
-    let http_server_address_str = opt.http_server_address.clone();
-    let http_server_port = opt.http_server_port;
-    let http_server_address = http_server_address_str
-        .parse::<Ipv4Addr>()
-        .expect("error while parsing the http server address, must be a valid ipv4 address");
-
-
-    let analytic_timeout_to_execute_query = Duration::from_secs(opt.analytic_timeout_to_execute_query);
-    info!("Analytic sql timeout : {} seconds", analytic_timeout_to_execute_query.as_secs());
-    let analytic_timeout_to_stream = Duration::from_secs(opt.analytic_timeout_to_stream);
-    info!("Analytic stream timeout : {} seconds", analytic_timeout_to_stream.as_secs());
-
     // handling commands
     if let Some(export_history_to_parse) = &opt.command_archive_history_date {
         info!(
@@ -820,59 +793,129 @@ async fn main() {
             panic!("error while reading the configuration: {:?}", e);
         });
 
+    let start_http_server = opt.http_server_address.is_some()
+        || opt.http_server_port.is_some()
+        || config.http_bind.is_some()
+        || config.http_port.is_some();
+
+    // Shared with Flight SQL (`HistoryAnalyticProfile`).
+    let analytic_small_profile_effective = opt
+        .analytic_small_profile
+        .or(config.analytic_small_profile)
+        .unwrap_or(false);
+
     debug!("Starting with config : {:?}\n", &config);
 
-    let history_ref = (&config.history.clone().unwrap()).clone();
-    let history_for_flight = history_ref.clone();
+    let flight_history = config.history.clone();
+    // Flight SQL bind: CLI overrides `[analytic]` flightSqlBind.
     let flight_sql_bind = opt
         .flight_sql_bind
         .clone()
         .or_else(|| config.flight_sql_bind.clone());
-    let flight_profile = if opt.analytic_small_profile {
+    let flight_profile = if analytic_small_profile_effective {
         crate::history::HistoryAnalyticProfile::Small
     } else {
         crate::history::HistoryAnalyticProfile::Default
     };
 
-    let _http_server = tokio::task::spawn(async move {
-        log::info!(
-            "Starting http server on {}:{}",
-            http_server_address,
-            http_server_port
+    if start_http_server {
+        let http_server_address_str = opt
+            .http_server_address
+            .clone()
+            .or_else(|| config.http_bind.clone())
+            .unwrap_or_else(|| "0.0.0.0".into());
+        let http_server_port = opt
+            .http_server_port
+            .or(config.http_port)
+            .unwrap_or(3000);
+        let http_server_address = http_server_address_str
+            .parse::<Ipv4Addr>()
+            .expect("error while parsing the http server address, must be a valid ipv4 address");
+
+        let analytic_timeout_to_execute_query = Duration::from_secs(
+            opt.analytic_timeout_to_execute_query
+                .or(config.analytic_timeout_execute_secs)
+                .unwrap_or(60),
+        );
+        let analytic_timeout_to_stream = Duration::from_secs(
+            opt.analytic_timeout_to_stream
+                .or(config.analytic_timeout_stream_secs)
+                .unwrap_or(600),
+        );
+        let analytic_max_simultaneous_queries = opt
+            .analytic_max_simultaneous_queries
+            .or(config.analytic_max_simultaneous_queries)
+            .unwrap_or(5);
+
+        info!(
+            "Analytic sql timeout: {} s",
+            analytic_timeout_to_execute_query.as_secs()
+        );
+        info!(
+            "Analytic stream timeout: {} s",
+            analytic_timeout_to_stream.as_secs()
         );
 
-        let http_server_config = httpserver::HttpServerConfig {
-            v4_binding: (http_server_address.into(), http_server_port),
-            sql_endpoint_config: httpserver::HttpSqlEndPointConfig {
-                simultaneous_queries: opt.analytic_max_simultaneous_queries,
-                max_attempts_to_acquire_slot: 100,
-                timeout_to_acquire_slot: Duration::from_millis(100),
-                timeout_to_execute_query: analytic_timeout_to_execute_query,
-                timeout_to_stream: analytic_timeout_to_stream, 
-                analytic_profile_type: if opt.analytic_small_profile {
-                    Some(httpserver::AnalyticProfileType::Small)
-                } else {
-                    None
-                },
-            },
-        };
+        let http_history = config.history.clone();
 
-        httpserver::server_start(http_server_config, &history_ref).await;
-    });
+        let _ = tokio::task::spawn(async move {
+            if http_history.is_none() {
+                log::info!(
+                    "Starting HTTP on {}:{} (no [history] storageTopic — /sql unavailable until history is configured)",
+                    http_server_address,
+                    http_server_port
+                );
+            } else {
+                log::info!(
+                    "Starting http server on {}:{}",
+                    http_server_address,
+                    http_server_port
+                );
+            }
+
+            let http_server_config = httpserver::HttpServerConfig {
+                v4_binding: (http_server_address.into(), http_server_port),
+                sql_endpoint_config: httpserver::HttpSqlEndPointConfig {
+                    simultaneous_queries: analytic_max_simultaneous_queries,
+                    max_attempts_to_acquire_slot: 100,
+                    timeout_to_acquire_slot: Duration::from_millis(100),
+                    timeout_to_execute_query: analytic_timeout_to_execute_query,
+                    timeout_to_stream: analytic_timeout_to_stream,
+                    analytic_profile_type: if analytic_small_profile_effective {
+                        Some(httpserver::AnalyticProfileType::Small)
+                    } else {
+                        None
+                    },
+                },
+            };
+
+            httpserver::server_start(http_server_config, http_history).await;
+        });
+    } else {
+        log::info!(
+            "HTTP server not enabled (set `[http]` bind/port in config.toml or use --http-server-address / --http-server-port)"
+        );
+    }
 
     if let Some(bind) = flight_sql_bind {
-        tokio::spawn(async move {
-            match crate::history::flight_sql::serve_history_flight_sql(
-                history_for_flight,
-                bind.clone(),
-                flight_profile,
-            )
-            .await
-            {
-                Ok(()) => log::warn!("Arrow Flight SQL server on {bind} stopped"),
-                Err(e) => log::error!("Arrow Flight SQL server error: {e}"),
-            }
-        });
+        if let Some(hist) = flight_history {
+            tokio::spawn(async move {
+                match crate::history::flight_sql::serve_history_flight_sql(
+                    hist,
+                    bind.clone(),
+                    flight_profile,
+                )
+                .await
+                {
+                    Ok(()) => log::warn!("Arrow Flight SQL server on {bind} stopped"),
+                    Err(e) => log::error!("Arrow Flight SQL server error: {e}"),
+                }
+            });
+        } else {
+            log::warn!(
+                "Skipping Arrow Flight SQL on {bind}: no history database (add [history] storageTopic)"
+            );
+        }
     }
 
     start(config, opt.activate_statistics_on_monitor)
