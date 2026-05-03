@@ -1,9 +1,10 @@
 # Test config for development
 
 # Omit [http] entirely (or leave bind/port unset) to disable the analytic HTTP server unless you pass --http-server-*.
+# Port must match clients (e.g. vega-plot/index.html). If 3000 is taken, pick another and update clients / use a reverse proxy.
 [http]
 bind="0.0.0.0"
-port=7880
+port=3000
 
 [analytic]
 # CLI flags override these entries when passed (see --help).

@@ -1,0 +1,30 @@
+{
+  "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+  "title": "Presence by month (full year)",
+  "description": "Same presence definition as the heatmap: topic home/esp13/sensors/presence, payload='1', sum(arrow_cast(payload Utf8→Int32)) grouped by calendar month; only {{YEAR}} in the URL (not {{MONTH}}).",
+  "data": {
+    "url": "http://fhome.frett27.internal:3000/sql/select month, sum(arrow_cast(arrow_cast(payload,'Utf8'),'Int32')) as avg_v from mqtt_hive where topic='home%2Fesp13%2Fsensors%2Fpresence' and year={{YEAR}} and payload='1' group by month order by month",
+    "format": { "type": "csv" }
+  },
+  "width": 720,
+  "height": 360,
+  "mark": { "type": "bar", "tooltip": true },
+  "encoding": {
+    "x": {
+      "field": "month",
+      "type": "ordinal",
+      "title": "Month",
+      "sort": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+      "axis": { "labelAngle": 0 }
+    },
+    "y": {
+      "field": "avg_v",
+      "type": "quantitative",
+      "title": "Σ presence (payload as Int32)"
+    },
+    "tooltip": [
+      { "field": "month", "type": "ordinal", "title": "Month" },
+      { "field": "avg_v", "type": "quantitative", "title": "Σ presence" }
+    ]
+  }
+}

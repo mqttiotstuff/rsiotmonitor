@@ -1,0 +1,109 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/rsiotmonitor/vega-plot/meta.schema.json",
+  "title": "rsiotmonitor vega-plot dashboard meta",
+  "description": "Configuration for vega-plot/index.html: tabbed screens, Vega-Lite spec paths, layout, and default period. See llm.txt in this folder for plain-text assistant guidance on authoring specs and SQL URLs.",
+  "type": "object",
+  "required": ["pageTitle", "screens"],
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "Optional: set to \"./meta.schema.json\" for editor validation."
+    },
+    "pageTitle": {
+      "type": "string",
+      "description": "Document title and main <h1>."
+    },
+    "defaults": {
+      "type": "object",
+      "description": "Initial year/month for the period filter (overridable by ?year= & ?month= query).",
+      "properties": {
+        "year": { "type": "integer", "minimum": 1990, "maximum": 2100 },
+        "month": { "type": "integer", "minimum": 1, "maximum": 12 }
+      },
+      "additionalProperties": false
+    },
+    "introHtml": {
+      "type": "string",
+      "description": "HTML snippet shown under the page title (trusted content only)."
+    },
+    "screens": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/screen" }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "screen": {
+      "type": "object",
+      "required": ["id"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-zA-Z][a-zA-Z0-9_-]*$",
+          "description": "Stable id for URLs (#id) and DOM; letters, digits, underscore, hyphen."
+        },
+        "title": { "type": "string" },
+        "description": { "type": "string", "description": "Plain text; HTML-escaped when rendered." },
+        "descriptionHtml": { "type": "string", "description": "Raw HTML (trusted)." },
+        "layout": {
+          "oneOf": [
+            {
+              "type": "string",
+              "enum": ["stack", "row", "horizontal", "sideBySide"]
+            },
+            {
+              "type": "object",
+              "properties": {
+                "flow": { "type": "string", "enum": ["stack", "row", "horizontal", "sideBySide"] },
+                "mode": { "type": "string" },
+                "gap": { "type": "string", "description": "CSS gap, e.g. 16px" },
+                "defaultChart": { "$ref": "#/$defs/chartLayout" }
+              },
+              "additionalProperties": true
+            }
+          ],
+          "description": "stack: vertical charts. row/horizontal: flex row with wrap. defaultChart applies to a single spec screen only."
+        },
+        "spec": {
+          "type": "string",
+          "description": "Relative path to one Vega-Lite JSON file (single chart). Ignored if charts[] is non-empty."
+        },
+        "charts": {
+          "type": "array",
+          "description": "Multiple Vega-Lite specs on one tab; takes precedence over spec when non-empty.",
+          "items": { "$ref": "#/$defs/chartEntry" }
+        }
+      },
+      "additionalProperties": false
+    },
+    "chartEntry": {
+      "type": "object",
+      "required": ["spec"],
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "descriptionHtml": { "type": "string" },
+        "spec": {
+          "type": "string",
+          "description": "Path to Vega-Lite JSON (e.g. vega-spec.json, events.json)."
+        },
+        "layout": { "$ref": "#/$defs/chartLayout" }
+      },
+      "additionalProperties": false
+    },
+    "chartLayout": {
+      "type": "object",
+      "properties": {
+        "span": { "type": "string", "enum": ["full", "half", "auto"] },
+        "width": { "type": "string", "description": "Alias for span in some setups." },
+        "breakBefore": { "type": "boolean" },
+        "newLine": { "type": "boolean" },
+        "lineBreak": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    }
+  }
+}

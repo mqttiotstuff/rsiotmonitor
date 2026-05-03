@@ -832,6 +832,12 @@ async fn main() {
             .parse::<Ipv4Addr>()
             .expect("error while parsing the http server address, must be a valid ipv4 address");
 
+        log::info!(
+            "Analytic HTTP /sql listening on {}:{} (same as `[http]` port in config.toml — Vega URLs must use this port)",
+            http_server_address,
+            http_server_port
+        );
+
         let analytic_timeout_to_execute_query = Duration::from_secs(
             opt.analytic_timeout_to_execute_query
                 .or(config.analytic_timeout_execute_secs)

@@ -1,0 +1,28 @@
+{
+  "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+  "title": "Evènements de présence par jour (selected month)",
+  "data": {
+    "url": "http://fhome.frett27.internal:3000/sql/select date_trunc('day', arrow_cast(timestamp,'Timestamp(Microsecond,None)')) as day, count(*) as event_count from mqtt_hive where topic='home%2Fesp13%2Fsensors%2Fpresence' and year={{YEAR}} and month={{MONTH}} group by date_trunc('day', arrow_cast(timestamp,'Timestamp(Microsecond,None)')) order by day",
+    "format": { "type": "csv" }
+  },
+  "width": 640,
+  "height": 320,
+  "mark": { "type": "bar", "tooltip": true },
+  "encoding": {
+    "x": {
+      "field": "day",
+      "type": "temporal",
+      "title": "Day",
+      "axis": { "format": "%d", "labelAngle": 0, "title": "Day of month" }
+    },
+    "y": {
+      "field": "event_count",
+      "type": "quantitative",
+      "title": "Number of events"
+    },
+    "tooltip": [
+      { "field": "day", "type": "temporal", "title": "Day", "format": "%Y-%m-%d" },
+      { "field": "event_count", "type": "quantitative", "title": "Events" }
+    ]
+  }
+}
