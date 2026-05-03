@@ -39,6 +39,9 @@ pub struct IOTMonitor {
     #[derivative(Debug = "ignore")]
     pub history: Option<Arc<History>>,
 
+    /// Arrow Flight SQL bind address from `config.toml` `[analytic]` `flightSqlBind`. Overridden by `--flight-sql-bind` when that flag is set.
+    pub flight_sql_bind: Option<String>,
+
     /// state connection
     #[derivative(Debug = "ignore")]
     pub state_connection: Option<Arc<sqlite::ConnectionThreadSafe>>,
@@ -54,6 +57,7 @@ impl IOTMonitor {
         monitored_devices: HashMap<String, Box<MonitoringInfo>>,
         history_topic: Option<String>,
         history: Option<Arc<History>>,
+        flight_sql_bind: Option<String>,
     ) -> Self {
         // return the IOTMonitor structure
         IOTMonitor {
@@ -62,6 +66,7 @@ impl IOTMonitor {
             state_connection: None,
             history_topic,
             history,
+            flight_sql_bind,
         }
     }
 

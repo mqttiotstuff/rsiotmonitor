@@ -80,6 +80,7 @@ pub async fn read_configuration() -> mqtt_async_client::Result<IOTMonitor> {
     let t = Toml::new(&contents);
 
     let mut history_topic: Option<String> = None;
+    let mut flight_sql_bind: Option<String> = None;
 
     let devices: Vec<Box<MonitoringInfo>> = t.iter().fold(Vec::new(), |acc, i| {
         let mut m = acc;
@@ -87,6 +88,12 @@ pub async fn read_configuration() -> mqtt_async_client::Result<IOTMonitor> {
             if table.header() == "mqtt" {
                 log::debug!("Reading mqtt configuration");
                 crate::config::read_mqtt_config_table(&mut mqtt_config, table);
+            } else if table.header() == "http" {
+                log::debug!("Reading http configuration");
+                read_http_config_table(table);
+            } else if table.header() == "analytic" {
+                log::debug!("Reading analytic configuration");
+                read_analytic_config_table(&mut flight_sql_bind, table);
             } else if table.header() == "history" {
                 log::debug!("Reading history configuration");
                 for kv in table.items() {
@@ -144,7 +151,13 @@ pub async fn read_configuration() -> mqtt_async_client::Result<IOTMonitor> {
         }));
     }
 
-    let iotmonitor = IOTMonitor::new(mqtt_config, hash, history_topic, opt_history);
+    let iotmonitor = IOTMonitor::new(
+        mqtt_config,
+        hash,
+        history_topic,
+        opt_history,
+        flight_sql_bind,
+    );
 
     log::debug!("IOTMonitor created: {:?}", iotmonitor);
 
@@ -209,6 +222,46 @@ pub fn read_process_informations_from_config_table(
     }
 
     monitor_info.associated_process_information = Some(Box::new(additional_process_info));
+}
+
+/// Optional `[http]` settings. `bind` / `port` are reserved for documentation; the HTTP server still uses CLI for address/port today.
+pub fn read_http_config_table(table: &toml_parse::Table) {
+    assert!(table.header() == "http");
+    for kv in table.items() {
+        if let Some(keyname) = kv.key() {
+            if let Value::StrLit(_) = kv.value() {
+                match keyname {
+                    "bind" | "port" => {
+                        debug!(
+                            "http.{} is present in config.toml; HTTP server still uses CLI for address/port",
+                            keyname
+                        );
+                    }
+                    _ => debug!("unknown key in [http] section: {}", keyname),
+                }
+            }
+        }
+    }
+}
+
+/// Optional `[analytic]` settings (Flight SQL bind, etc.).
+pub fn read_analytic_config_table(
+    flight_sql_bind: &mut Option<String>,
+    table: &toml_parse::Table,
+) {
+    assert!(table.header() == "analytic");
+    for kv in table.items() {
+        if let Some(keyname) = kv.key() {
+            if let Value::StrLit(s) = kv.value() {
+                match keyname {
+                    "flightSqlBind" => {
+                        *flight_sql_bind = Some(s.clone());
+                    }
+                    _ => debug!("unknown key in [analytic] section: {}", keyname),
+                }
+            }
+        }
+    }
 }
 
 pub fn read_mqtt_config_table(config: &mut MqttConfig, table: &toml_parse::Table) {

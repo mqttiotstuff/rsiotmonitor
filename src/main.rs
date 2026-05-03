@@ -652,8 +652,9 @@ struct Opt {
     )]
     analytic_timeout_to_stream: u64,
 
-    /// Bind address for Arrow Flight SQL (e.g. `0.0.0.0:50051`). Same history tables as HTTP SQL.
-    /// Omit to disable. ADBC / JDBC Flight SQL clients connect here.
+    /// Bind address for Arrow Flight SQL (e.g. `0.0.0.0:50051`). When omitted, uses `flightSqlBind`
+    /// from `config.toml` `[analytic]` if set; otherwise Flight SQL is disabled. Passing this flag
+    /// overrides the config file.
     #[structopt(long, name = "flightSqlBind")]
     flight_sql_bind: Option<String>,
 
@@ -823,7 +824,10 @@ async fn main() {
 
     let history_ref = (&config.history.clone().unwrap()).clone();
     let history_for_flight = history_ref.clone();
-    let flight_sql_bind = opt.flight_sql_bind.clone();
+    let flight_sql_bind = opt
+        .flight_sql_bind
+        .clone()
+        .or_else(|| config.flight_sql_bind.clone());
     let flight_profile = if opt.analytic_small_profile {
         crate::history::HistoryAnalyticProfile::Small
     } else {
