@@ -19,8 +19,9 @@ use datafusion::dataframe::DataFrame;
 use datafusion::datasource::{provider_as_source, TableProvider, TableType};
 use datafusion::error::Result;
 use datafusion::execution::context::{SessionState, TaskContext};
+use datafusion::execution::memory_pool::GreedyMemoryPool;
 use datafusion::execution::RecordBatchStream;
-use datafusion::execution::runtime_env::RuntimeEnv;
+use datafusion::execution::runtime_env::{RuntimeEnv, RuntimeEnvBuilder};
 use datafusion::parquet::file::serialized_reader::ReadOptions;
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::memory::MemoryStream;
@@ -38,6 +39,48 @@ use tokio::time::timeout;
 
 use super::{History, TopicPayload};
 use async_trait::async_trait;
+
+/// Tuning for the DataFusion engine shared by HTTP `/sql` and Arrow Flight SQL.
+/// Use `session_config_and_runtime` so both endpoints apply the same resource limits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HistoryAnalyticProfile {
+    Small,
+    Large,
+    Default,
+}
+
+impl HistoryAnalyticProfile {
+    /// [`SessionConfig`] and [`RuntimeEnv`] for this profile (same rules as the HTTP SQL handler).
+    pub fn session_config_and_runtime(self) -> (SessionConfig, RuntimeEnv) {
+        let runtime_env = match self {
+            Self::Small => {
+                let pool_size = 50 * 1024 * 1024;
+                RuntimeEnvBuilder::new()
+                    .with_memory_pool(Arc::new(GreedyMemoryPool::new(pool_size)))
+                    .build()
+                    .expect("RuntimeEnv (small analytic profile)")
+            }
+            Self::Large => {
+                let pool_size = 1024 * 1024 * 1024;
+                RuntimeEnvBuilder::new()
+                    .with_memory_pool(Arc::new(GreedyMemoryPool::new(pool_size)))
+                    .build()
+                    .expect("RuntimeEnv (large analytic profile)")
+            }
+            Self::Default => RuntimeEnv::default(),
+        };
+        let config_env = match self {
+            Self::Small => SessionConfig::new()
+                .with_batch_size(512)
+                .with_target_partitions(2),
+            Self::Large => SessionConfig::new()
+                .with_target_partitions(8)
+                .with_batch_size(2048),
+            Self::Default => SessionConfig::new(),
+        };
+        (config_env, runtime_env)
+    }
+}
 
 /// A custom datasource, used to represent a datastore with a single index
 #[derive(Clone)]
@@ -65,7 +108,7 @@ impl CustomDataSource {
 struct CustomExec {
     db: CustomDataSource,
     projected_schema: SchemaRef,
-    cache: PlanProperties,
+    cache: Arc<PlanProperties>,
 }
 
 impl CustomExec {
@@ -80,14 +123,14 @@ impl CustomExec {
     }
 
     /// This function creates the cache object that stores the plan properties such as schema, equivalence properties, ordering, partitioning, etc.
-    fn compute_properties(schema: SchemaRef) -> PlanProperties {
+    fn compute_properties(schema: SchemaRef) -> Arc<PlanProperties> {
         let eq_properties = EquivalenceProperties::new(schema);
-        PlanProperties::new(
+        Arc::new(PlanProperties::new(
             eq_properties,
             Partitioning::UnknownPartitioning(1),
             EmissionType::Incremental,
             Boundedness::Bounded,
-        )
+        ))
     }
 }
 
@@ -253,7 +296,7 @@ impl ExecutionPlan for CustomExec {
         self
     }
 
-    fn properties(&self) -> &PlanProperties {
+    fn properties(&self) -> &Arc<PlanProperties> {
         &self.cache
     }
 
@@ -321,9 +364,8 @@ impl TableProvider for CustomDataSource {
     }
 }
 
-/**
- * create a new DataFusion Session
- */
+/// Low-level: register `history` (LevelDB) and `mqtt_hive` (`history_archive` parquet). Prefer
+/// [`create_history_sql_session`] for HTTP and Flight so profile + tables stay consistent.
 pub async fn create_session(
     history_db: &Arc<History>,
     config: SessionConfig,
@@ -361,6 +403,15 @@ pub async fn create_session(
     .await?;
 
     return Ok(ctx);
+}
+
+/// [`SessionContext`] with `history` + `mqtt_hive` tables for the given analytic profile (shared by HTTP SQL and Flight SQL).
+pub async fn create_history_sql_session(
+    history_db: &Arc<History>,
+    profile: HistoryAnalyticProfile,
+) -> Result<SessionContext, Box<dyn std::error::Error>> {
+    let (config, runtime) = profile.session_config_and_runtime();
+    create_session(history_db, config, runtime).await
 }
 
 #[tokio::test]

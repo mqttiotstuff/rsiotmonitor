@@ -22,18 +22,13 @@ use std::{
 
 use tokio::{sync::Semaphore, time::timeout};
 
-use crate::history::{create_session, History};
+use crate::history::{create_history_sql_session, History, HistoryAnalyticProfile};
 
 use datafusion::{
     arrow::array::RecordBatch,
     dataframe::DataFrame,
     error::DataFusionError,
-    execution::{
-        context::SessionContext,
-        memory_pool::GreedyMemoryPool,
-        runtime_env::{RuntimeEnv, RuntimeEnvBuilder},
-        SendableRecordBatchStream,
-    },
+    execution::{context::SessionContext, SendableRecordBatchStream},
 };
 
 use actix_web::{
@@ -112,14 +107,18 @@ pub enum AnalyticProfileType {
     Large,
 }
 
-pub struct HttpServerConfig {
-    pub v4_binding: (IpAddr, u16),
+pub struct HttpSqlEndPointConfig {
     pub simultaneous_queries: usize,
     pub max_attempts_to_acquire_slot: usize,
     pub timeout_to_acquire_slot: Duration,
     pub timeout_to_execute_query: Duration,
     pub timeout_to_stream: Duration, // Maximum time allowed for streaming response
     pub analytic_profile_type: Option<AnalyticProfileType>,
+}
+
+pub struct HttpServerConfig {
+    pub v4_binding: (IpAddr, u16),
+    pub sql_endpoint_config: HttpSqlEndPointConfig,
 }
 
 #[derive(Clone)]
@@ -130,9 +129,19 @@ struct AppData {
 
 // Wrapper stream that holds a semaphore permit for its entire duration
 // This ensures the permit is released when the stream completes
+// 
+// UNSAFE EXPLANATION:
+// We need 2 unsafe blocks:
+// 1. `map_unchecked_mut` - Standard pattern for Stream wrappers (safe, just accessing field through Pin)
+// 2. `Box::from_raw` - Reclaims leaked box (safe because we're the only owner)
+//
+// The permit lifetime must be extended because:
+// - Permit is acquired in the handler function (short lifetime)
+// - Stream outlives the function (needs 'static lifetime)
+// - Semaphore is Arc<Semaphore> which is effectively 'static, so this is safe
 struct StreamWithPermit<S> {
     inner: S,
-    _permit: tokio::sync::SemaphorePermit<'static>,
+    _permit_ptr: *mut tokio::sync::SemaphorePermit<'static>, // Pointer to leaked box - will be reclaimed in Drop
 }
 
 impl<S: Stream> Stream for StreamWithPermit<S> {
@@ -142,8 +151,24 @@ impl<S: Stream> Stream for StreamWithPermit<S> {
         self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Self::Item>> {
+        // UNSAFE #1: Standard pattern for implementing Stream on wrapper types
+        // Safe because: We're just accessing a field through Pin, not moving or invalidating anything
         unsafe {
             self.map_unchecked_mut(|s| &mut s.inner).poll_next(cx)
+        }
+    }
+}
+
+// Custom Drop to reclaim the leaked box
+impl<S> Drop for StreamWithPermit<S> {
+    fn drop(&mut self) {
+        // UNSAFE #2: Reclaim the box we leaked earlier
+        // Safe because:
+        // 1. We created this pointer from Box::leak, so we own it
+        // 2. We're the only owner (no other code has this pointer)
+        // 3. The permit will be properly dropped, releasing the semaphore slot
+        unsafe {
+            let _ = Box::from_raw(self._permit_ptr);
         }
     }
 }
@@ -263,126 +288,122 @@ async fn sql_query(
             name: "error, semaphore not initialized".into(),
         })?;
 
-    if let Ok(permit) = semaphore.try_acquire() {
-        let semaphore_permit = permit;
+    // Try to acquire permit - if not available, return error immediately
+    let semaphore_permit = match semaphore.try_acquire() {
+        Ok(permit) => permit,
+        Err(_) => {
+            return Err(HttpProcessingError {
+                name: "error, too many concurrent requests".into(),
+            })
+            .into();
+        }
+    };
 
-        assert!(app_data.history_db.is_some());
-        let h: Arc<History> = app_data.history_db.clone().unwrap();
+    assert!(app_data.history_db.is_some());
+    let h: Arc<History> = app_data.history_db.clone().unwrap();
 
-        // implementation
-        log::debug!("creating session");
+    // implementation
+    log::debug!("creating session");
 
-        let runtime_env = match app_data.config.analytic_profile_type {
-            Some(AnalyticProfileType::Small) => {
-                log::debug!("PROFILING : small profile activated");
-                // restrict to using at most 50MB of memory
-                let pool_size = 50 * 1024 * 1024;
-                let runtime_env = RuntimeEnvBuilder::new()
-                    .with_memory_pool(Arc::new(GreedyMemoryPool::new(pool_size)))
-                    .build()
-                    .unwrap();
+    let profile = match app_data.config.sql_endpoint_config.analytic_profile_type {
+        Some(AnalyticProfileType::Small) => {
+            log::debug!("PROFILING : small profile activated");
+            HistoryAnalyticProfile::Small
+        }
+        Some(AnalyticProfileType::Large) => HistoryAnalyticProfile::Large,
+        None => HistoryAnalyticProfile::Default,
+    };
 
-                runtime_env
-            }
-            Some(AnalyticProfileType::Large) => {
-                // restrict to using at most 1GB of memory
-                let pool_size = 1024 * 1024 * 1024;
-                let runtime_env = RuntimeEnvBuilder::new()
-                    .with_memory_pool(Arc::new(GreedyMemoryPool::new(pool_size)))
-                    .build()
-                    .unwrap();
-                runtime_env
-            }
-            None => RuntimeEnv::default(),
-        };
+    let ctx: SessionContext = create_history_sql_session(&h, profile).await?;
 
-        let config_env = match app_data.config.analytic_profile_type {
-            Some(AnalyticProfileType::Small) => SessionConfig::new()
-                .with_batch_size(512)
-                .with_target_partitions(2),
-            Some(AnalyticProfileType::Large) => SessionConfig::new()
-                .with_target_partitions(8)
-                .with_batch_size(2048),
-            None => SessionConfig::new(),
-        };
+    let execute_options = SQLOptions::new()
+        .with_allow_ddl(false)
+        .with_allow_dml(false)
+        .with_allow_statements(false);
 
-        let ctx: SessionContext = create_session(&h, config_env, runtime_env).await?;
+    log::info!("executing sql query: {}", &sql);
+    let start_time = Instant::now();
+    let asyncdf = ctx.sql_with_options(&sql, execute_options);
+    let df = asyncdf.await?;
 
-        let execute_options = SQLOptions::new()
-            .with_allow_ddl(false)
-            .with_allow_dml(false)
-            .with_allow_statements(false);
+    let result = timeout(
+        app_data.config.sql_endpoint_config.timeout_to_execute_query,
+        df.execute_stream(),
+    )
+    .await;
 
-        log::info!("executing sql query: {}", &sql);
-        let start_time = Instant::now();
-        let asyncdf = ctx.sql_with_options(&sql, execute_options);
-        let df = asyncdf.await?;
+    let response = match result {
+        Ok(Ok(batches)) => {
+            // success
 
-        let result = timeout(
-            app_data.config.timeout_to_execute_query,
-            df.execute_stream(),
-        )
-        .await;
+            log::debug!("dataframe created, collecting");
 
-        let response = match result {
-            Ok(Ok(batches)) => {
-                // success
+            log::debug!("streaming content");
+            let stream = stream_recordbatch(batches, app_data.config.sql_endpoint_config.timeout_to_stream);
 
-                log::debug!("dataframe created, collecting");
+            // Wrap the stream with the permit to keep it alive for the entire stream duration
+            // The permit will be dropped when the stream completes, releasing the semaphore slot
+            // 
+            // Why we need this: The semaphore permit has a lifetime tied to the function scope,
+            // but we need it to live for the entire stream duration (which outlives the function).
+            // 
+            // How it works:
+            // 1. Box::leak (safe Rust) extends the lifetime to 'static by leaking the box
+            // 2. We store a pointer to the leaked box
+            // 3. In Drop, we reclaim the box (requires unsafe, but is safe because we're the only owner)
+            // 
+            // This is safe because:
+            // - The semaphore is Arc<Semaphore> which is effectively 'static
+            // - We're the only owner of the leaked box
+            // - The box is properly reclaimed in Drop
+            let permit_boxed = Box::new(semaphore_permit);
+            let permit_static: &'static mut tokio::sync::SemaphorePermit<'static> = Box::leak(permit_boxed);
+            let guarded_stream = StreamWithPermit {
+                inner: stream,
+                _permit_ptr: permit_static as *mut tokio::sync::SemaphorePermit<'static>,
+            };
 
-                log::debug!("streaming content");
-                let stream = stream_recordbatch(batches, app_data.config.timeout_to_stream);
+            let response = HttpResponseBuilder::new(StatusCode::OK)
+                // .append_header(("Content-Type", "plain/text"))
+                .streaming(guarded_stream);
 
-                use futures_util::stream::StreamExt;
-                let guarded_stream = stream.map(move |item| {
-                    let _keep_permit = &semaphore_permit;
-                    item
-                });
-
-                let response = HttpResponseBuilder::new(StatusCode::OK)
-                    // .append_header(("Content-Type", "plain/text"))
-                    .streaming(guarded_stream);
-
-                log::info!(
-                    "query executed in {} seconds, starting streaming",
-                    start_time.elapsed().as_secs_f64()
-                );
-                response
-            }
-            Ok(Err(e)) => {
-                // query failed
-                log::error!("error, query failed: {}", e);
-                return Err(HttpProcessingError {
-                    name: format!("error, query failed: {}", e).into(),
-                })
-                .into();
-            }
-            Err(e) => {
-                // timeout hit
-                // query future is dropped -> execution stops
-                log::error!(
+            log::info!(
+                "query executed in {} seconds, starting streaming",
+                start_time.elapsed().as_secs_f64()
+            );
+            response
+        }
+        Ok(Err(e)) => {
+            // query failed - permit will be dropped when function returns
+            log::error!("error, query failed: {}", e);
+            return Err(HttpProcessingError {
+                name: format!("error, query failed: {}", e).into(),
+            })
+            .into();
+        }
+        Err(e) => {
+            // timeout hit - permit will be dropped when function returns
+            // query future is dropped -> execution stops
+            log::error!(
+                "error, query timed out after {} seconds: {}",
+                app_data.config.sql_endpoint_config.timeout_to_execute_query.as_secs(),
+                e
+            );
+            return Err(HttpProcessingError {
+                name: format!(
                     "error, query timed out after {} seconds: {}",
-                    app_data.config.timeout_to_execute_query.as_secs(),
+                    app_data.config.sql_endpoint_config.timeout_to_execute_query.as_secs(),
                     e
-                );
-                return Err(HttpProcessingError {
-                    name: format!(
-                        "error, query timed out after {} seconds: {}",
-                        app_data.config.timeout_to_execute_query.as_secs(),
-                        e
-                    )
-                    .into(),
-                })
-                .into();
-            }
-        };
+                )
+                .into(),
+            })
+            .into();
+        }
+    };
 
-        // release the semaphore
-
-        return Ok(response);
-    } else {
-        return Err("error, too many requests".into());
-    }
+    // Note: semaphore permit is held by the stream wrapper and will be released
+    // when the stream completes (when the HTTP response finishes)
+    return Ok(response);
 }
 
 // start the server
@@ -395,7 +416,7 @@ pub async fn server_start(config: HttpServerConfig, history_db: &Arc<History>) {
 
     // Initialize the static semaphore
     CONCURRENT_REQUESTS_SEMAPHORE
-        .set(Arc::new(Semaphore::new(config.simultaneous_queries)))
+        .set(Arc::new(Semaphore::new(config.sql_endpoint_config.simultaneous_queries)))
         .expect("semaphore already initialized");
 
     let query_endpoint = AppData {

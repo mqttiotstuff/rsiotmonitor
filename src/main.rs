@@ -652,6 +652,11 @@ struct Opt {
     )]
     analytic_timeout_to_stream: u64,
 
+    /// Bind address for Arrow Flight SQL (e.g. `0.0.0.0:50051`). Same history tables as HTTP SQL.
+    /// Omit to disable. ADBC / JDBC Flight SQL clients connect here.
+    #[structopt(long, name = "flightSqlBind")]
+    flight_sql_bind: Option<String>,
+
     #[structopt(
         long,
         name = "activateStatisticsOnMonitor",
@@ -817,6 +822,14 @@ async fn main() {
     debug!("Starting with config : {:?}\n", &config);
 
     let history_ref = (&config.history.clone().unwrap()).clone();
+    let history_for_flight = history_ref.clone();
+    let flight_sql_bind = opt.flight_sql_bind.clone();
+    let flight_profile = if opt.analytic_small_profile {
+        crate::history::HistoryAnalyticProfile::Small
+    } else {
+        crate::history::HistoryAnalyticProfile::Default
+    };
+
     let _http_server = tokio::task::spawn(async move {
         log::info!(
             "Starting http server on {}:{}",
@@ -826,22 +839,37 @@ async fn main() {
 
         let http_server_config = httpserver::HttpServerConfig {
             v4_binding: (http_server_address.into(), http_server_port),
-            simultaneous_queries: opt.analytic_max_simultaneous_queries,
-            max_attempts_to_acquire_slot: 100,
-            timeout_to_acquire_slot: Duration::from_millis(100),
-            timeout_to_execute_query: analytic_timeout_to_execute_query,
-            timeout_to_stream: analytic_timeout_to_stream, 
-            analytic_profile_type: if opt.analytic_small_profile {
-                log::debug!("PROFILING : small profile activated");
-                Some(httpserver::AnalyticProfileType::Small)
-            } else {
-                log::debug!("PROFILING : no profile activated");
-                None
+            sql_endpoint_config: httpserver::HttpSqlEndPointConfig {
+                simultaneous_queries: opt.analytic_max_simultaneous_queries,
+                max_attempts_to_acquire_slot: 100,
+                timeout_to_acquire_slot: Duration::from_millis(100),
+                timeout_to_execute_query: analytic_timeout_to_execute_query,
+                timeout_to_stream: analytic_timeout_to_stream, 
+                analytic_profile_type: if opt.analytic_small_profile {
+                    Some(httpserver::AnalyticProfileType::Small)
+                } else {
+                    None
+                },
             },
         };
 
         httpserver::server_start(http_server_config, &history_ref).await;
     });
+
+    if let Some(bind) = flight_sql_bind {
+        tokio::spawn(async move {
+            match crate::history::flight_sql::serve_history_flight_sql(
+                history_for_flight,
+                bind.clone(),
+                flight_profile,
+            )
+            .await
+            {
+                Ok(()) => log::warn!("Arrow Flight SQL server on {bind} stopped"),
+                Err(e) => log::error!("Arrow Flight SQL server error: {e}"),
+            }
+        });
+    }
 
     start(config, opt.activate_statistics_on_monitor)
         .await
