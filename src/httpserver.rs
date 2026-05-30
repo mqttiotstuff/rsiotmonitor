@@ -225,8 +225,9 @@ fn stream_recordbatch<S: Stream<Item = Result<RecordBatch, DataFusionError>>>(
                              }
                         }
                     }
-                    Err(_e) => {
-                        let new_error = HttpProcessingError {  name: "error in fetching".into()};
+                    Err(e) => {
+                        let msg = format!("error in streaming record batch: {}", e);
+                        let new_error = HttpProcessingError { name: msg.into() };
                         log::error!("{}", new_error);
                         Err(new_error.into())
                     }

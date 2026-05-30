@@ -13,7 +13,7 @@ use std::time::Duration;
 use arrow::array::ArrayRef;
 use datafusion::arrow::array::{BinaryBuilder, Int32Builder, Int64Builder, StringBuilder};
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
-use datafusion::arrow::record_batch::RecordBatch;
+use datafusion::arrow::record_batch::{RecordBatch, RecordBatchOptions};
 use datafusion::catalog::Session;
 use datafusion::dataframe::DataFrame;
 use datafusion::datasource::{provider_as_source, TableProvider, TableType};
@@ -211,69 +211,80 @@ impl Stream for LevelDBStream {
 
             let mut row = skipped_iterator.next();
 
-            // while row.is_some() {
             let mut cpt = 1;
+            let count_only = mutself.projected_schema.fields().is_empty();
 
             while row.is_some() && cpt % MAX_PACKET_SIZE != 0 {
                 mutself.index += 1;
-                if let Some(a) = row.as_ref() {
-                    use chrono::Datelike;
-                    use leveldb::database::util::*;
+                if !count_only {
+                    if let Some(a) = row.as_ref() {
+                        use chrono::Datelike;
+                        use leveldb::database::util::*;
 
-                    let timestamp = i64::from_u8(&a.0);
+                        let timestamp = i64::from_u8(&a.0);
 
-                    let tp = TopicPayload::from_u8(&a.1);
-                    let topic = tp.topic;
-                    let payload = tp.payload;
+                        let tp = TopicPayload::from_u8(&a.1);
+                        let topic = tp.topic;
+                        let payload = tp.payload;
 
-                    all_topics.append_value(topic);
-                    let b = payload.to_vec();
-                    all_payloads.append_value(b);
+                        all_topics.append_value(topic);
+                        let b = payload.to_vec();
+                        all_payloads.append_value(b);
 
-                    let tbytes = timestamp;
-                    all_timestamps.append_value(tbytes);
+                        let tbytes = timestamp;
+                        all_timestamps.append_value(tbytes);
 
-                    // year, month, day
-                    let naive = chrono::NaiveDateTime::from_timestamp_opt(timestamp / 1_000_000, 0)
+                        let naive = chrono::NaiveDateTime::from_timestamp_opt(
+                            timestamp / 1_000_000,
+                            0,
+                        )
                         .unwrap();
-                    let date = naive.date();
-                    let year: i32 = date.year();
-                    all_year.append_value(year);
-                    let month: i32 = date.month().try_into().unwrap();
-                    all_month.append_value(month);
+                        let date = naive.date();
+                        let year: i32 = date.year();
+                        all_year.append_value(year);
+                        let month: i32 = date.month().try_into().unwrap();
+                        all_month.append_value(month);
 
-                    let day: i32 = date.day().try_into().unwrap();
-                    all_days.append_value(day);
+                        let day: i32 = date.day().try_into().unwrap();
+                        all_days.append_value(day);
+                    }
                 }
 
                 cpt += 1;
                 row = skipped_iterator.next();
-            } // while
+            }
 
             if row.is_none() {
-                // reach the end of iterator
                 mutself.is_eof = true;
             }
-            // }
 
-            let mut result: Vec<ArrayRef> = Vec::new();
-            for f in mutself.projected_schema.fields().iter() {
-                if f.name() == "topic" {
-                    result.push(Arc::new(all_topics.finish()));
-                } else if f.name() == "timestamp" {
-                    result.push(Arc::new(all_timestamps.finish()));
-                } else if f.name() == "year" {
-                    result.push(Arc::new(all_year.finish()));
-                } else if f.name() == "month" {
-                    result.push(Arc::new(all_month.finish()));
-                } else if f.name() == "day" {
-                    result.push(Arc::new(all_days.finish()));
-                } else if f.name() == "payload" {
-                    result.push(Arc::new(all_payloads.finish()));
+            let num_rows = cpt - 1;
+
+            let batch = if count_only {
+                RecordBatch::try_new_with_options(
+                    mutself.projected_schema.clone(),
+                    vec![],
+                    &RecordBatchOptions::new().with_row_count(Some(num_rows)),
+                )?
+            } else {
+                let mut result: Vec<ArrayRef> = Vec::new();
+                for f in mutself.projected_schema.fields().iter() {
+                    if f.name() == "topic" {
+                        result.push(Arc::new(all_topics.finish()));
+                    } else if f.name() == "timestamp" {
+                        result.push(Arc::new(all_timestamps.finish()));
+                    } else if f.name() == "year" {
+                        result.push(Arc::new(all_year.finish()));
+                    } else if f.name() == "month" {
+                        result.push(Arc::new(all_month.finish()));
+                    } else if f.name() == "day" {
+                        result.push(Arc::new(all_days.finish()));
+                    } else if f.name() == "payload" {
+                        result.push(Arc::new(all_payloads.finish()));
+                    }
                 }
-            }
-
-            let batch = RecordBatch::try_new(mutself.projected_schema.clone(), result)?;
+                RecordBatch::try_new(mutself.projected_schema.clone(), result)?
+            };
 
             Some(Ok(batch))
         })
@@ -534,5 +545,47 @@ async fn test_sql_create_external() -> Result<()> {
     // print the results
     df.show().await?;
 
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_count_star_from_history() -> Result<()> {
+    let init = History::init().unwrap();
+    let ctx = SessionContext::new();
+    let db = CustomDataSource { inner: init };
+    ctx.register_table(TableReference::bare("history"), Arc::new(db))?;
+
+    let df = ctx.sql("SELECT count(*) FROM history").await?;
+    let batches = df.collect().await?;
+    dbg!(&batches);
+    assert_eq!(batches.len(), 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_avg_timestamp_from_history() -> Result<()> {
+    let init = History::init().unwrap();
+    let ctx = SessionContext::new();
+    let db = CustomDataSource { inner: init };
+    ctx.register_table(TableReference::bare("history"), Arc::new(db))?;
+
+    let df = ctx.sql("SELECT avg(timestamp) FROM history").await?;
+    let batches = df.collect().await?;
+    dbg!(&batches);
+    assert_eq!(batches.len(), 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_avg_literal_from_history() -> Result<()> {
+    let init = History::init().unwrap();
+    let ctx = SessionContext::new();
+    let db = CustomDataSource { inner: init };
+    ctx.register_table(TableReference::bare("history"), Arc::new(db))?;
+
+    let df = ctx.sql("SELECT avg(1) FROM history").await?;
+    let batches = df.collect().await?;
+    dbg!(&batches);
+    assert_eq!(batches.len(), 1);
     Ok(())
 }
