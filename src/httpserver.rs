@@ -1,4 +1,5 @@
 use actix_cors::Cors;
+use actix_files::Files;
 use actix_web::{
     http::{self, header::Header},
     web::Bytes,
@@ -13,6 +14,7 @@ use futures_core::Stream;
 use std::{
     io::{BufWriter, IntoInnerError},
     net::{IpAddr, SocketAddr},
+    path::PathBuf,
     pin::Pin,
     process::Output,
     sync::{Arc, OnceLock},
@@ -406,6 +408,46 @@ async fn sql_query(
     return Ok(response);
 }
 
+/// Directory for static HTML/assets, served at `/` (fallback after `/sql/…`).
+/// Override with env `RSIOTMONITOR_PAGES_DIR`; default is `./pages` (cwd at startup).
+fn pages_directory() -> PathBuf {
+    std::env::var("RSIOTMONITOR_PAGES_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            std::env::current_dir()
+                .unwrap_or_else(|_| PathBuf::from("."))
+                .join("pages")
+        })
+}
+
+fn prepare_pages_root() -> Option<PathBuf> {
+    let pages_dir = pages_directory();
+    if !pages_dir.exists() {
+        if let Err(e) = std::fs::create_dir_all(&pages_dir) {
+            log::warn!("Could not create pages directory {:?}: {}", pages_dir, e);
+            return None;
+        }
+    }
+    if !pages_dir.is_dir() {
+        log::warn!(
+            "Static pages path {:?} is not a directory; root static serving disabled",
+            pages_dir
+        );
+        return None;
+    }
+    match pages_dir.canonicalize() {
+        Ok(abs) => Some(abs),
+        Err(e) => {
+            log::warn!(
+                "Could not resolve pages directory {:?}: {}; using as-is",
+                pages_dir,
+                e
+            );
+            Some(pages_dir)
+        }
+    }
+}
+
 // start the server
 // binding is the address and port to bind to
 /// `history_db` is optional: the server still listens so `/sql` can respond when history is configured later; without history, queries return an error.
@@ -423,6 +465,14 @@ pub async fn server_start(config: HttpServerConfig, history_db: Option<Arc<Histo
         config: Arc::new(config),
     };
 
+    let pages_root = prepare_pages_root();
+    if let Some(ref root) = pages_root {
+        log::info!(
+            "Serving static pages at / from {} (/sql/ takes precedence)",
+            root.display()
+        );
+    }
+
     HttpServer::new(move || {
         // let cors = Cors::default()
         //     .send_wildcard()
@@ -435,13 +485,24 @@ pub async fn server_start(config: HttpServerConfig, history_db: Option<Arc<Histo
         let cors = Cors::permissive();
 
         let local_query: AppData = query_endpoint.clone();
-        App::new()
+        let mut app = App::new()
             .app_data(local_query)
             .wrap(middleware::DefaultHeaders::new().add(("X-Version", "0.2")))
             .wrap(middleware::Compress::default())
             .wrap(cors)
             .wrap(middleware::Logger::default())
-            .service(sql_query)
+            // Registered before static fallback so `/sql/{sql}` is never served as a file.
+            .service(sql_query);
+
+        if let Some(ref root) = pages_root {
+            app = app.default_service(
+                Files::new("/", root.clone())
+                    .index_file("index.html")
+                    .prefer_utf8(true),
+            );
+        }
+
+        app
     })
     .bind(addr)
     .expect("fail to bind")

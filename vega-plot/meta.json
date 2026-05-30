@@ -8,38 +8,33 @@
   "introHtml": " Vega editor: <a href=\"https://vega.github.io/editor/\" target=\"_blank\" rel=\"noopener\">vega.github.io/editor</a>",
   "screens": [
     {
-      "id": "events-by-day",
-      "title": "Evènements de présence par jour (selected month)",
-      "description": "Default vertical stack (<code>layout</code> omitted = stack).",
-      "spec": "events.json"
-    },
-    {
       "id": "presence-heatmap",
       "title": "Présence — heatmap (heure × jour)",
-      "description": "Deux sources : <strong>mqtt_hive</strong> (<code>vega-spec.json</code>) et <strong>history</strong> (<code>presence_journee.json</code>). Même période Année / Mois.",
+      "description": "",
       "layout": { "flow": "row", "gap": "20px" },
       "charts": [
-        {
-          "id": "heatmap-hive",
-          "title": "Heatmap — mqtt_hive",
-          "description": "Agrégation horaire sur table partitionnée.",
-          "spec": "vega-spec.json",
-          "layout": { "span": "half" }
-        },
         {
           "id": "presence-journee",
           "title": "Heatmap — history (journée)",
           "description": "Même vue heure × jour, données <code>history</code>.",
           "spec": "presence_journee.json",
           "layout": { "span": "half" }
+        },
+        {
+          "id": "heatmap-hive",
+          "title": "Historique sur le mois sélectionné",
+          "description": "Agrégation horaire sur table partitionnée.",
+          "spec": "vega-spec.json",
+          "layout": { "span": "half" }
+        },
+        {
+          "id": "presence-year-by-month",
+          "title": "Présence — année complète par mois",
+          "description": "Same presence metric as the heatmap (<code>sum(Int32(payload))</code> with <code>payload='1'</code>), aggregated by month for the <strong>Year</strong> control. SQL uses only <code>{{YEAR}}</code> (not <code>{{MONTH}}</code>).",
+          "spec": "presence-year-by-month.json",
+          "layout": { "span": "full", "breakBefore": true }
         }
       ]
-    },
-    {
-      "id": "presence-year-by-month",
-      "title": "Présence — année complète par mois",
-      "description": "Same presence metric as the heatmap (<code>sum(Int32(payload))</code> with <code>payload='1'</code>), aggregated by month for the <strong>Year</strong> control. SQL uses only <code>{{YEAR}}</code> (not <code>{{MONTH}}</code>).",
-      "spec": "presence-year-by-month.json"
     },
     {
       "id": "multi-chart-demo",
@@ -72,6 +67,12 @@
           "layout": { "breakBefore": true, "span": "full" }
         }
       ]
+    },
+    {
+      "id": "events-by-month-rolling",
+      "title": "Tous les évènements",
+      "description": "liste de tous les évènements enregistrés sur la période sélectionnée",
+      "spec": "events-by-month-rolling.json"
     }
   ]
 }

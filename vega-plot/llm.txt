@@ -82,6 +82,20 @@ How to add a Vega-Lite file
 4. Encode the SQL query as the path after /sql/ (spaces and quotes appear
    URL-encoded in practice).
 
+SQL dialect (endpoint /sql/)
+-----------------------------
+Queries are evaluated as **Apache DataFusion** SQL (not generic ANSI).
+Reference: https://datafusion.apache.org/user-guide/sql/index.html
+Scalar / aggregate reference: https://datafusion.apache.org/user-guide/sql/scalar_functions.html
+For **mqtt_hive**-style tables, push filters on partition columns (**year**, **month**)
+before heavy expressions so the engine can prune files (see e.g.
+events-by-month-rolling.json: `year in (Y-1, Y)` plus a month-index range).
+For **performance** comparison between two SQL variants, prefer **EXPLAIN ANALYZE**
+(runs the query and prints per-operator metrics). Use plain **EXPLAIN** (or
+**EXPLAIN VERBOSE**) only for structural plans without execution timings.
+DataFusion: https://datafusion.apache.org/user-guide/sql/explain.html — typically
+run in a SQL shell / DataFusion session, not the Vega `/sql/` CSV URL.
+
 5. Use placeholders {{YEAR}} and {{MONTH}} in the URL where the SQL uses hive
    partition filters year= and month= so the dashboard period control can
    rewrite them.

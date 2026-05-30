@@ -8,6 +8,7 @@
     <script src="https://cdn.jsdelivr.net/npm/vega-lite@5"></script>
     <script src="https://cdn.jsdelivr.net/npm/vega-embed@6"></script>
     <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
     <style>
         body {
             font-family: Arial, sans-serif;
@@ -69,6 +70,42 @@
             flex: 1 1 auto;
             min-width: 0;
             min-height: 0;
+        }
+        .chart-export-toolbar {
+            position: absolute;
+            top: 8px;
+            right: 8px;
+            z-index: 9;
+            display: flex;
+            gap: 6px;
+            align-items: center;
+        }
+        .chart-export-btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 34px;
+            height: 34px;
+            padding: 0;
+            border: 1px solid #ccc;
+            border-radius: 6px;
+            background: #fff;
+            color: #37474f;
+            cursor: pointer;
+            box-sizing: border-box;
+        }
+        .chart-export-btn:hover:not(:disabled) {
+            background: #e3f2fd;
+            border-color: #90caf9;
+            color: #1565c0;
+        }
+        .chart-export-btn:disabled {
+            opacity: 0.45;
+            cursor: not-allowed;
+        }
+        .chart-export-btn svg {
+            display: block;
+            pointer-events: none;
         }
         .loader-overlay {
             position: absolute;
@@ -428,6 +465,11 @@
                 invalidJsonSpecFile: 'Invalid JSON in spec file',
                 couldNotLoadChartSpecification: 'Could not load chart specification',
                 csvLarge: 'CSV response is large (~{kb} KB). Load Papa Parse or shorten the query.',
+                chartExportAria: 'Export chart data',
+                exportCsv: 'Download CSV',
+                exportExcel: 'Download Excel',
+                exportNoData: 'No tabular data loaded for this chart yet.',
+                exportXlsxUnavailable: 'Excel export needs the xlsx library (check network / CDN).',
                 months: [
                     'January',
                     'February',
@@ -490,6 +532,11 @@
                 couldNotLoadChartSpecification: 'Impossible de charger la spécification du graphique',
                 csvLarge:
                     'Réponse CSV volumineuse (~{kb} Ko). Chargez Papa Parse ou raccourcissez la requête.',
+                chartExportAria: 'Exporter les données du graphique',
+                exportCsv: 'Télécharger CSV',
+                exportExcel: 'Télécharger Excel',
+                exportNoData: 'Aucune donnée tabulaire chargée pour ce graphique.',
+                exportXlsxUnavailable: 'Export Excel impossible : bibliothèque xlsx indisponible (réseau / CDN).',
                 months: [
                     'janvier',
                     'février',
@@ -602,6 +649,9 @@
 
         /** Per chart instance id: monotonic counter so stale async failures never repaint errors after a newer load succeeds. */
         var chartLoadSeq = {};
+
+        /** Latest tabular rows per chart instance id (for CSV / XLSX export). */
+        var chartExportData = {};
 
         function bumpChartLoadSeq(chartInstanceId) {
             var n = (chartLoadSeq[chartInstanceId] || 0) + 1;
@@ -1059,9 +1109,15 @@
             if (typeof Papa === 'undefined') {
                 throw new Error(t('csvLarge', { kb: String(Math.round(csvText.length / 1024)) }));
             }
-            var parsed = Papa.parse(csvText, { header: true, skipEmptyLines: 'greedy', dynamicTyping: true });
+            var parsed = Papa.parse(csvText, {
+                delimiter: ',',
+                header: true,
+                skipEmptyLines: 'greedy',
+                dynamicTyping: true
+            });
             if (parsed.errors && parsed.errors.length) {
                 var bad = parsed.errors.filter(function (e) {
+                    if (e.type === 'Delimiter' && e.code === 'UndetectableDelimiter') return false;
                     return e.type === 'Quotes' || e.type === 'Delimiter';
                 });
                 if (bad.length) {
@@ -1072,11 +1128,164 @@
             return embedSpec;
         }
 
+        function parseCsvRowsForExport(csvText) {
+            if (!csvText || typeof csvText !== 'string' || typeof Papa === 'undefined') return [];
+            var parsed = Papa.parse(csvText, {
+                delimiter: ',',
+                header: true,
+                skipEmptyLines: 'greedy',
+                dynamicTyping: true
+            });
+            if (parsed.errors && parsed.errors.length) {
+                var bad = parsed.errors.filter(function (e) {
+                    if (e.type === 'Delimiter' && e.code === 'UndetectableDelimiter') return false;
+                    return e.type === 'Quotes' || e.type === 'Delimiter';
+                });
+                if (bad.length) return [];
+            }
+            return Array.isArray(parsed.data) ? parsed.data : [];
+        }
+
+        function updateChartExportToolbarState(cid, enabled) {
+            var wrap = document.getElementById('chart-wrap-' + cid);
+            if (!wrap) return;
+            var tb = wrap.querySelector('.chart-export-toolbar');
+            if (!tb) return;
+            tb.querySelectorAll('.chart-export-btn').forEach(function (b) {
+                b.disabled = !enabled;
+            });
+        }
+
+        function setChartExportRows(cid, rows) {
+            if (!cid) return;
+            if (rows && Array.isArray(rows) && rows.length) {
+                chartExportData[cid] = rows;
+                updateChartExportToolbarState(cid, true);
+            } else {
+                delete chartExportData[cid];
+                updateChartExportToolbarState(cid, false);
+            }
+        }
+
+        function clearChartExportRows(cid) {
+            delete chartExportData[cid];
+            updateChartExportToolbarState(cid, false);
+        }
+
+        function sanitizeExportBasename(cid) {
+            var s = String(cid || 'chart').replace(/[^\w\-]+/g, '_');
+            return s.length > 96 ? s.slice(0, 96) : s;
+        }
+
+        function objectsToCsvString(rows) {
+            if (!rows || !rows.length) return '';
+            var keys = Object.keys(rows[0]);
+            var lines = [keys.join(',')];
+            rows.forEach(function (r) {
+                lines.push(
+                    keys
+                        .map(function (k) {
+                            var v = r[k];
+                            if (v == null) return '';
+                            var s = typeof v === 'object' ? JSON.stringify(v) : String(v);
+                            if (/[",\n\r]/.test(s)) return '"' + s.replace(/"/g, '""') + '"';
+                            return s;
+                        })
+                        .join(',')
+                );
+            });
+            return lines.join('\r\n');
+        }
+
+        function triggerTextFileDownload(filename, mime, text) {
+            var blob = new Blob([text], { type: mime });
+            var a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            URL.revokeObjectURL(a.href);
+        }
+
+        function downloadChartExportCsv(cid) {
+            var rows = chartExportData[cid];
+            if (!rows || !rows.length) {
+                window.alert(t('exportNoData'));
+                return;
+            }
+            var csv = objectsToCsvString(rows);
+            triggerTextFileDownload(sanitizeExportBasename(cid) + '.csv', 'text/csv;charset=utf-8', '\ufeff' + csv);
+        }
+
+        function downloadChartExportXlsx(cid) {
+            var rows = chartExportData[cid];
+            if (!rows || !rows.length) {
+                window.alert(t('exportNoData'));
+                return;
+            }
+            if (typeof XLSX === 'undefined' || !XLSX.utils || !XLSX.utils.json_to_sheet) {
+                window.alert(t('exportXlsxUnavailable'));
+                return;
+            }
+            try {
+                var ws = XLSX.utils.json_to_sheet(rows);
+                var wb = XLSX.utils.book_new();
+                XLSX.utils.book_append_sheet(wb, ws, 'Data');
+                XLSX.writeFile(wb, sanitizeExportBasename(cid) + '.xlsx');
+            } catch (e) {
+                console.error(e);
+                window.alert(t('exportXlsxUnavailable'));
+            }
+        }
+
+        function appendChartExportToolbar(wrap, cid) {
+            wrap.id = 'chart-wrap-' + cid;
+            var tb = document.createElement('div');
+            tb.className = 'chart-export-toolbar';
+            tb.setAttribute('data-chart-cid', cid);
+            tb.setAttribute('aria-label', t('chartExportAria'));
+            var iconCsv =
+                '<svg xmlns="http://www.w3.org/2000/svg" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M8 13h8"/><path d="M8 17h8"/><path d="M8 9h2"/></svg>';
+            var iconXlsx =
+                '<svg xmlns="http://www.w3.org/2000/svg" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M8 12h8"/><path d="M8 16h5"/><rect x="8" y="8" width="8" height="3" rx="0.5"/></svg>';
+            [['csv', iconCsv, t('exportCsv')], ['xlsx', iconXlsx, t('exportExcel')]].forEach(function (spec) {
+                var b = document.createElement('button');
+                b.type = 'button';
+                b.className = 'chart-export-btn';
+                b.setAttribute('data-format', spec[0]);
+                b.setAttribute('title', spec[2]);
+                b.setAttribute('aria-label', spec[2]);
+                b.disabled = true;
+                b.innerHTML = spec[1];
+                tb.appendChild(b);
+            });
+            wrap.appendChild(tb);
+        }
+
+        function initChartExportDelegation() {
+            var root = document.getElementById('screens-root');
+            if (!root || root.dataset.chartExportInit) return;
+            root.dataset.chartExportInit = '1';
+            root.addEventListener('click', function (ev) {
+                var btn = ev.target.closest('.chart-export-btn');
+                if (!btn || !root.contains(btn)) return;
+                ev.preventDefault();
+                var tb = btn.closest('.chart-export-toolbar');
+                var cid = tb && tb.getAttribute('data-chart-cid');
+                if (!cid) return;
+                var fmt = btn.getAttribute('data-format');
+                if (fmt === 'csv') downloadChartExportCsv(cid);
+                else if (fmt === 'xlsx') downloadChartExportXlsx(cid);
+            });
+        }
+
         function loadChartFor(screenId) {
             var seq = bumpChartLoadSeq(screenId);
             var raw = rawSpecsByScreen[screenId];
             if (!raw) {
                 setDataLoading(screenId, false);
+                clearChartExportRows(screenId);
                 if (isCurrentChartLoadSeq(screenId, seq)) {
                     showChartError(screenId, t('chartSpecNotLoaded'), t('chartSpecNotLoadedDetail'));
                 }
@@ -1088,6 +1297,7 @@
 
             clearChartError(screenId);
             setDataLoading(screenId, true);
+            clearChartExportRows(screenId);
 
             var chartSel = '#chart-' + screenId;
             var data = vegaSpecs && vegaSpecs.data;
@@ -1097,11 +1307,14 @@
             function finishVegaError(err) {
                 if (!isCurrentChartLoadSeq(screenId, seq)) return;
                 setDataLoading(screenId, false);
+                clearChartExportRows(screenId);
                 console.error(err);
                 showChartError(screenId, t('chartRenderFailed'), formatEmbedError(err));
             }
 
             if (!dataUrl) {
+                var v0 = vegaSpecs.data && Array.isArray(vegaSpecs.data.values) ? vegaSpecs.data.values : [];
+                setChartExportRows(screenId, v0);
                 vegaEmbed(chartSel, vegaSpecs, embedOpts)
                     .then(function () {
                         if (!isCurrentChartLoadSeq(screenId, seq)) return;
@@ -1135,7 +1348,15 @@
                 })
                 .then(function (csvText) {
                     if (!isCurrentChartLoadSeq(screenId, seq)) return Promise.resolve();
-                    var embedSpec = csvTextToEmbedSpec(csvText, vegaSpecs);
+                    var rows = parseCsvRowsForExport(csvText);
+                    setChartExportRows(screenId, rows);
+                    var embedSpec;
+                    try {
+                        embedSpec = csvTextToEmbedSpec(csvText, vegaSpecs);
+                    } catch (e) {
+                        clearChartExportRows(screenId);
+                        throw e;
+                    }
                     return vegaEmbed(chartSel, embedSpec, embedOpts);
                 })
                 .then(function () {
@@ -1146,6 +1367,7 @@
                 .catch(function (err) {
                     if (!isCurrentChartLoadSeq(screenId, seq)) return;
                     setDataLoading(screenId, false);
+                    clearChartExportRows(screenId);
                     console.error(err);
                     if (err && err.fetchError) {
                         showFetchError(
@@ -1245,6 +1467,7 @@
         function renderScreens(meta) {
             usedScreenIds = {};
             resetChartInstanceIds();
+            chartExportData = {};
             document.title = meta.pageTitle || t('docTitle');
             document.getElementById('page-title').textContent = meta.pageTitle || t('dashboardsDefault');
             var intro = document.getElementById('page-intro');
@@ -1390,6 +1613,8 @@
                     errEl.setAttribute('aria-live', 'assertive');
                     wrap.appendChild(errEl);
 
+                    appendChartExportToolbar(wrap, cid);
+
                     var loader = document.createElement('div');
                     loader.id = 'data-loader-' + cid;
                     loader.className = 'loader-overlay';
@@ -1460,6 +1685,7 @@
                 })
                 .then(function (meta) {
                     var result = renderScreens(meta);
+                    initChartExportDelegation();
                     dashboardPlans = result.plans || [];
                     initPeriodFilters(meta);
                     if (result.firstScreenId) {

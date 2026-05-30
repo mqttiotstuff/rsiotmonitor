@@ -168,11 +168,8 @@ impl History {
 
         // writing rows count ..
         let mut cpt: u128;
-
         let mut it = Box::new(self.database.iter(&ReadOptions::new()));
-
         let mut row = it.next();
-
         let mut last: Option<i64> = None;
 
         while row.is_some() {

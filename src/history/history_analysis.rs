@@ -384,7 +384,7 @@ pub async fn create_session(
     // put in place a similar declaration of : "create external table mqtt_hive(year int,month int, day int, timestamp bigint, topic bytea, payload bytea) stored as parquet partitioned by (year,month,day)  location 'history_archive';";
     // execute the query
     ctx.register_parquet(
-        "mqtt_hive",
+        "history_archive",
         "history_archive",
         ParquetReadOptions {
             table_partition_cols: vec![
