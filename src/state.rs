@@ -1,4 +1,4 @@
-///! Memoize the iot states in database
+//! Memoize the iot states in database
 
 use sqlite::{self, Connection, ConnectionThreadSafe, Result, State};
 

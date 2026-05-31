@@ -1,8 +1,7 @@
-use std::marker::PhantomData;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::SystemTime;
-use std::{fmt, fs, u128};
+use std::{fmt, fs};
 
 use chrono::Datelike;
 use leveldb::compaction::Compaction;
@@ -23,6 +22,12 @@ use leveldb::util::FromU8;
 use std::convert::TryInto;
 
 use std::error::Error;
+
+pub(crate) fn naive_from_timestamp_us(timestamp: i64) -> chrono::NaiveDateTime {
+    chrono::DateTime::from_timestamp_micros(timestamp)
+        .expect("timestamp out of range")
+        .naive_utc()
+}
 
 /// Content of the value column
 pub struct TopicPayload<'a> {
@@ -99,6 +104,37 @@ pub struct History {
 
 impl History {
 
+    /// Open (or create) a LevelDB history at `path` without repair/compaction.
+    pub fn open_at(path: impl AsRef<Path>) -> Result<Arc<History>, Box<dyn Error>> {
+        let path = path.as_ref();
+        let mut options = Options::new();
+        options.create_if_missing = true;
+
+        let database = Database::open(path, &options).map_err(|e| {
+            error!("failed to open database at {:?}: {:?}", path, e);
+            Box::new(HistoryError) as Box<dyn Error>
+        })?;
+
+        Ok(Arc::new(History {
+            database: Arc::new(database),
+        }))
+    }
+
+    /// Isolated database for unit tests (unique temp dir per call; safe under parallel `cargo test`).
+    #[cfg(test)]
+    pub fn init_for_test() -> Result<Arc<History>, Box<dyn Error>> {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        static TEST_DB_COUNTER: AtomicU64 = AtomicU64::new(0);
+        let n = TEST_DB_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "rsiotmonitor-history-{}-{}",
+            std::process::id(),
+            n
+        ));
+        Self::open_at(path)
+    }
+
     /// init the history, and open the archive database
     pub fn init() -> Result<Arc<History>, Box<dyn Error>> {
         let path = Path::new("history");
@@ -111,18 +147,10 @@ impl History {
             warn!("the repair action is not successfull, or database does not exists, continue");
         };
 
-        let database = match Database::open(path, &options) {
-            Ok(db) => db,
-            Err(e) => {
-                panic!("failed to open database: {:?}", e);
-            }
-        };
-        println!("database compaction");
-        database.compact(&[], &[255, 255, 255, 255, 255, 255, 255, 255, 255]);
+        let history = Self::open_at(path)?;
+        history.database.compact(&[], &[255, 255, 255, 255, 255, 255, 255, 255, 255]);
 
-        Ok(Arc::new(History {
-            database: Arc::new(database),
-        }))
+        Ok(history)
     }
 
     // store an event to levedb database
@@ -146,7 +174,7 @@ impl History {
 
         let p = TopicPayload { topic, payload };
 
-        return p.as_slice(|payload_bytes| {
+        p.as_slice(|payload_bytes| {
             debug!("payload : {:?}", payload_bytes);
             match self.database.put(&write_opts, &timestamp, payload_bytes) {
                 Ok(_) => Ok(()),
@@ -155,7 +183,7 @@ impl History {
                     Err(Box::new(HistoryError {}))
                 }
             }
-        });
+        })
     }
 
     /// export the current database events to a parquet file
@@ -193,7 +221,7 @@ impl History {
         let mut writer = SerializedFileWriter::new(file, schema, props)?;
 
         // writing rows count ..
-        let mut cpt: u128;
+        let mut cpt: u64;
         let mut it = Box::new(self.database.iter(&ReadOptions::new()));
         let mut row = it.next();
         let mut last: Option<i64> = None;
@@ -211,7 +239,7 @@ impl History {
             let mut all_payloads: Vec<Vec<u8>> = Vec::new();
 
             // read 10_000 rows in the memory vector to create the parquet group
-            while row.is_some() && cpt % 10_000 != 0 {
+            while row.is_some() && !cpt.is_multiple_of(10_000) {
                 if let Some(a) = row.as_ref() {
                     let timestamp = i64::from_u8(&a.0);
 
@@ -231,9 +259,7 @@ impl History {
                         all_timestamps.push(tbytes);
 
                         // year, month, day
-                        let naive =
-                            chrono::NaiveDateTime::from_timestamp_opt(timestamp / 1_000_000, 0)
-                                .unwrap();
+                        let naive = naive_from_timestamp_us(timestamp);
                         let date = naive.date();
                         let year: i32 = date.year();
                         all_year.push(year);
@@ -244,7 +270,7 @@ impl History {
                         all_days.push(day);
 
                         cpt += 1;
-                        if cpt % 10_000 == 0 {
+                        if cpt.is_multiple_of(10_000) {
                             debug!("{} elements exported", cpt);
                         }
                     }
@@ -402,7 +428,7 @@ impl History {
 
 #[test]
 pub fn test_storage() {
-    let h = History::init().unwrap();
+    let h = History::init_for_test().unwrap();
     h.store_event("a".into(), "b".as_bytes()).unwrap();
     h.store_event("a1".into(), "b".as_bytes()).unwrap();
     h.store_event("a2".into(), "b".as_bytes()).unwrap();
@@ -418,7 +444,7 @@ pub fn test_storage() {
 #[test]
 pub fn test_storage_timestamp() -> Result<(), Box<dyn Error>> {
 
-    let h = History::init().unwrap();
+    let h = History::init_for_test().unwrap();
     
     for t in 0..63 {
         let e: i64 = 1 << t;
@@ -426,7 +452,7 @@ pub fn test_storage_timestamp() -> Result<(), Box<dyn Error>> {
     }
 
     // dump
-    let mut cpt: u128 = 0;
+    let mut cpt: u64 = 0;
     let mut it = h.database.iter(&ReadOptions::new());
 
     // writing rows ..
@@ -455,7 +481,7 @@ pub fn test_storage_timestamp() -> Result<(), Box<dyn Error>> {
 
 #[test]
 pub fn test_export() -> Result<(), Box<dyn Error>> {
-    let h = History::init()?;
+    let h = History::init_for_test()?;
     for _i in 0..100_000 {
         h.store_event("a".into(), "b".as_bytes())?;
         h.store_event("a1".into(), "b".as_bytes())?;
@@ -473,7 +499,7 @@ pub fn test_export() -> Result<(), Box<dyn Error>> {
 
 #[test]
 pub fn test_export_with_range() -> Result<(), Box<dyn Error>> {
-    let h = History::init()?;
+    let h = History::init_for_test()?;
     for _i in 0..100_000 {
         h.store_event_with_timestamp(0, "a".into(), "b".as_bytes())?;
         h.store_event_with_timestamp(1, "a1".into(), "b".as_bytes())?;
@@ -492,7 +518,7 @@ pub fn test_export_with_range() -> Result<(), Box<dyn Error>> {
 
 #[test]
 pub fn export() -> Result<(), Box<dyn Error>> {
-    let h = History::init()?;
+    let h = History::init_for_test()?;
 
     // export to parquet
     h.export_to_parquet("h.parquet", None, false)?;

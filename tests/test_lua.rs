@@ -1,4 +1,4 @@
-///! Evaluating the lua embedded language
+//! Evaluating the lua embedded language
 use std::error::Error;
 
 use mlua::{prelude::*, Variadic};

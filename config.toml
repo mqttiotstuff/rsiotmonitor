@@ -4,7 +4,7 @@
 # Port must match clients (e.g. vega-plot/index.html). If 3000 is taken, pick another and update clients / use a reverse proxy.
 [http]
 bind="0.0.0.0"
-port=3000
+port=3001
 
 [analytic]
 # CLI flags override these entries when passed (see --help).

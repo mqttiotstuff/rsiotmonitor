@@ -255,12 +255,9 @@ fn wrap_already_exists_processes(config: IOTMonitor) -> IOTMonitor {
                         debug!("{} found", &name);
 
                         if let Some(mi) = c.monitored_devices_mut().get_mut(&name) {
-                            match &mut mi.associated_process_information {
-                                Some(api) => {
-                                    api.pid = Some(p.pid);
-                                    info!("{} attached with pid {}", &name, p.pid);
-                                }
-                                None => {}
+                            if let Some(api) = &mut mi.associated_process_information {
+                                api.pid = Some(p.pid);
+                                info!("{} attached with pid {}", &name, p.pid);
                             }
                         }
                     }
@@ -833,7 +830,7 @@ async fn main() {
             .expect("error while parsing the http server address, must be a valid ipv4 address");
 
         log::info!(
-            "Analytic HTTP /sql listening on {}:{} (same as `[http]` port in config.toml — Vega URLs must use this port)",
+            "Analytic HTTP /sql listening on {}:{} (same as `[http]` port in config.toml)",
             http_server_address,
             http_server_port
         );
@@ -864,7 +861,7 @@ async fn main() {
 
         let http_history = config.history.clone();
 
-        let _ = tokio::task::spawn(async move {
+        let _http_server = tokio::task::spawn(async move {
             if http_history.is_none() {
                 log::info!(
                     "Starting HTTP on {}:{} (no [history] storageTopic — /sql unavailable until history is configured)",
@@ -884,7 +881,7 @@ async fn main() {
                 sql_endpoint_config: httpserver::HttpSqlEndPointConfig {
                     simultaneous_queries: analytic_max_simultaneous_queries,
                     max_attempts_to_acquire_slot: 100,
-                    timeout_to_acquire_slot: Duration::from_millis(100),
+                    timeout_to_acquire_slot: httpserver::DEFAULT_TIMEOUT_TO_ACQUIRE_SLOT,
                     timeout_to_execute_query: analytic_timeout_to_execute_query,
                     timeout_to_stream: analytic_timeout_to_stream,
                     analytic_profile_type: if analytic_small_profile_effective {

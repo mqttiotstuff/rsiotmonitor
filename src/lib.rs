@@ -1,7 +1,4 @@
-///
-/// module for browing process and command line, and launch registered agents
-///
-
+//! Module for browsing process and command line, and launching registered agents.
 pub mod process;
 
 pub mod state;
@@ -67,6 +64,7 @@ pub struct IOTMonitor {
 
 impl IOTMonitor {
     /// initialize the structure with no active database connection
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         mqtt_config: crate::config::MqttConfig,
         monitored_devices: HashMap<String, Box<MonitoringInfo>>,

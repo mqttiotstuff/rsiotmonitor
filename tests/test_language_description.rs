@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 /// ce fichier evalue la possibilité de décrire des interfaces pour des agents
 /// implémentés, et l'utilisation de fermeture ou configuration de ces objets
 /// par iotmonitor, pour permettre l'implémentation d'agents associés
@@ -159,8 +161,8 @@ async fn test_description() {
 
     // implementation on a bool information
     let ibool = interface(
-        move |e| {
-            let c = *ctx + 1;
+        move |_e| {
+            let _c = *ctx + 1;
             Ok(true)
         },
         || Ok(true),
@@ -182,9 +184,9 @@ async fn test_description() {
                 payload: "",
                 topic: "",
             };
-            let b = b.read(event).unwrap();
+            let _b = b.read(event).unwrap();
         }
-        SemanticInterface::Temperature(t) => {}
+        SemanticInterface::Temperature(_t) => {}
         _ => (),
     }
 }

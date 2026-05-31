@@ -7,17 +7,15 @@ use std::collections::HashSet;
 use std::fmt::{self, Debug, Formatter};
 use std::sync::Arc;
 use std::task::Poll;
-use std::time::Duration;
 
 use arrow::array::ArrayRef;
 use datafusion::arrow::array::{BinaryBuilder, Int32Builder, Int64Builder, StringBuilder};
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::arrow::record_batch::{RecordBatch, RecordBatchOptions};
 use datafusion::catalog::Session;
-use datafusion::dataframe::DataFrame;
-use datafusion::datasource::{provider_as_source, TableProvider, TableType};
+use datafusion::datasource::{TableProvider, TableType};
 use datafusion::error::Result;
-use datafusion::execution::context::{SessionState, TaskContext};
+use datafusion::execution::context::TaskContext;
 use datafusion::execution::memory_pool::GreedyMemoryPool;
 use datafusion::execution::RecordBatchStream;
 use datafusion::execution::runtime_env::{RuntimeEnv, RuntimeEnvBuilder};
@@ -30,13 +28,13 @@ use datafusion::prelude::*;
 use datafusion::scalar::ScalarValue;
 use datafusion::sql::TableReference;
 use datafusion_expr::expr::{BinaryExpr, Cast};
-use datafusion_expr::{Expr, LogicalPlanBuilder, Operator, TableProviderFilterPushDown};
+use datafusion_expr::{Expr, Operator, TableProviderFilterPushDown};
 use datafusion_physical_expr::EquivalenceProperties;
 use futures_core::Stream;
 use leveldb::db::Database;
 use leveldb::iterator::{Iterable, LevelDBIterator};
 use leveldb::options::ReadOptions as LevelDbReadOptions;
-use tokio::time::timeout;
+
 
 use super::{History, TopicPayload};
 use async_trait::async_trait;
@@ -267,22 +265,24 @@ unsafe impl Send for LevelDbIter {}
 
 impl LevelDbIter {
     fn open(db: Arc<Database>, seek_key: Option<&[u8]>) -> Self {
-        let mut inner = db.iter(&LevelDbReadOptions::new());
+        let inner = db.iter(&LevelDbReadOptions::new());
         if let Some(key) = seek_key {
             inner.seek(key);
         }
         // Iterator only holds a raw C pointer; Database lifetime is enforced by _db.
-        let inner = unsafe { std::mem::transmute(inner) };
+        let inner = unsafe {
+            std::mem::transmute::<leveldb::iterator::Iterator<'_>, leveldb::iterator::Iterator<'static>>(
+                inner,
+            )
+        };
         Self { _db: db, inner }
     }
 
     fn next_entry(&mut self) -> Option<(Vec<u8>, Vec<u8>)> {
-        if !self.inner.valid() {
+        if !self.inner.advance(false) {
             return None;
         }
-        let entry = self.inner.entry();
-        self.inner.advance();
-        Some(entry)
+        Some(self.inner.entry())
     }
 }
 
@@ -360,7 +360,6 @@ impl CustomDataSource {
 struct CustomExec {
     db: CustomDataSource,
     projected_schema: SchemaRef,
-    projection: Option<Vec<usize>>,
     pushdown: HistoryScanPushdown,
     cache: Arc<PlanProperties>,
 }
@@ -377,7 +376,6 @@ impl CustomExec {
         Self {
             db,
             projected_schema,
-            projection: projections.cloned(),
             pushdown: parse_history_filters(filters),
             cache,
         }
@@ -403,7 +401,6 @@ impl DisplayAs for CustomExec {
 pub struct LevelDBStream {
     schema: SchemaRef,
     projected_schema: Arc<Schema>,
-    projection: Option<Vec<usize>>,
     pushdown: HistoryScanPushdown,
     column_needs: ColumnNeeds,
     iter: Option<LevelDbIter>,
@@ -418,7 +415,6 @@ impl LevelDBStream {
         database: Arc<Database>,
         schema: SchemaRef,
         projected_schema: Arc<Schema>,
-        projection: Option<Vec<usize>>,
         pushdown: HistoryScanPushdown,
     ) -> Result<LevelDBStream> {
         let column_needs = ColumnNeeds::from_schema(&projected_schema);
@@ -429,7 +425,6 @@ impl LevelDBStream {
         Ok(Self {
             schema,
             projected_schema,
-            projection,
             pushdown,
             column_needs,
             iter: Some(LevelDbIter::open(database, seek_key.as_deref())),
@@ -437,28 +432,11 @@ impl LevelDBStream {
         })
     }
 
-    fn row_matches(pushdown: &HistoryScanPushdown, timestamp: i64, value: &[u8]) -> bool {
-        if !pushdown.timestamp_matches(timestamp) {
-            return false;
-        }
-        if let Some(expected) = pushdown.topic_eq.as_deref() {
-            if !TopicPayload::topic_bytes_match(value, expected) {
-                return false;
-            }
-        }
-        true
-    }
-
     fn append_row(
         timestamp: i64,
         value: &[u8],
         needs: ColumnNeeds,
-        all_topics: &mut Option<StringBuilder>,
-        all_timestamps: &mut Option<Int64Builder>,
-        all_year: &mut Option<Int32Builder>,
-        all_month: &mut Option<Int32Builder>,
-        all_days: &mut Option<Int32Builder>,
-        all_payloads: &mut Option<BinaryBuilder>,
+        builders: &mut RowBuilders,
     ) {
         use chrono::Datelike;
 
@@ -470,28 +448,79 @@ impl LevelDBStream {
 
         if needs.topic {
             let topic = std::str::from_utf8(topic_bytes).unwrap_or("");
-            all_topics.as_mut().unwrap().append_value(topic);
+            builders.topics.as_mut().unwrap().append_value(topic);
         }
         if needs.timestamp {
-            all_timestamps.as_mut().unwrap().append_value(timestamp);
+            builders.timestamps.as_mut().unwrap().append_value(timestamp);
         }
         if needs.payload {
-            all_payloads.as_mut().unwrap().append_value(payload);
+            builders.payloads.as_mut().unwrap().append_value(payload);
         }
         if needs.needs_date_parts() {
-            let naive =
-                chrono::NaiveDateTime::from_timestamp_opt(timestamp / 1_000_000, 0).unwrap();
+            let naive = super::history_storage::naive_from_timestamp_us(timestamp);
             let date = naive.date();
             if needs.year {
-                all_year.as_mut().unwrap().append_value(date.year());
+                builders.year.as_mut().unwrap().append_value(date.year());
             }
             if needs.month {
-                all_month.as_mut().unwrap().append_value(date.month() as i32);
+                builders
+                    .month
+                    .as_mut()
+                    .unwrap()
+                    .append_value(date.month() as i32);
             }
             if needs.day {
-                all_days.as_mut().unwrap().append_value(date.day() as i32);
+                builders.days.as_mut().unwrap().append_value(date.day() as i32);
             }
         }
+    }
+}
+
+struct RowBuilders {
+    topics: Option<StringBuilder>,
+    timestamps: Option<Int64Builder>,
+    year: Option<Int32Builder>,
+    month: Option<Int32Builder>,
+    days: Option<Int32Builder>,
+    payloads: Option<BinaryBuilder>,
+}
+
+impl RowBuilders {
+    fn for_needs(needs: ColumnNeeds) -> Self {
+        Self {
+            topics: needs
+                .topic
+                .then(|| StringBuilder::with_capacity(MAX_PACKET_SIZE, MAX_PACKET_SIZE * 50)),
+            timestamps: needs
+                .timestamp
+                .then(|| Int64Builder::with_capacity(MAX_PACKET_SIZE)),
+            year: needs
+                .year
+                .then(|| Int32Builder::with_capacity(MAX_PACKET_SIZE)),
+            month: needs
+                .month
+                .then(|| Int32Builder::with_capacity(MAX_PACKET_SIZE)),
+            days: needs
+                .day
+                .then(|| Int32Builder::with_capacity(MAX_PACKET_SIZE)),
+            payloads: needs
+                .payload
+                .then(|| BinaryBuilder::with_capacity(MAX_PACKET_SIZE, MAX_PACKET_SIZE * 1000)),
+        }
+    }
+}
+
+impl LevelDBStream {
+    fn row_matches(pushdown: &HistoryScanPushdown, timestamp: i64, value: &[u8]) -> bool {
+        if !pushdown.timestamp_matches(timestamp) {
+            return false;
+        }
+        if let Some(expected) = pushdown.topic_eq.as_deref() {
+            if !TopicPayload::topic_bytes_match(value, expected) {
+                return false;
+            }
+        }
+        true
     }
 }
 
@@ -521,25 +550,7 @@ impl Stream for LevelDBStream {
             let stop_after = this.pushdown.stop_after_timestamp();
             let pushdown = this.pushdown.clone();
 
-            let mut all_topics = needs
-                .topic
-                .then(|| StringBuilder::with_capacity(MAX_PACKET_SIZE, MAX_PACKET_SIZE * 50));
-            let mut all_timestamps = needs
-                .timestamp
-                .then(|| Int64Builder::with_capacity(MAX_PACKET_SIZE));
-            let mut all_year = needs
-                .year
-                .then(|| Int32Builder::with_capacity(MAX_PACKET_SIZE));
-            let mut all_month = needs
-                .month
-                .then(|| Int32Builder::with_capacity(MAX_PACKET_SIZE));
-            let mut all_days = needs
-                .day
-                .then(|| Int32Builder::with_capacity(MAX_PACKET_SIZE));
-            let mut all_payloads = needs
-                .payload
-                .then(|| BinaryBuilder::with_capacity(MAX_PACKET_SIZE, MAX_PACKET_SIZE * 1000));
-
+            let mut builders = RowBuilders::for_needs(needs);
             let mut rows_in_batch = 0usize;
 
             while rows_in_batch < MAX_PACKET_SIZE {
@@ -564,17 +575,7 @@ impl Stream for LevelDBStream {
 
                 rows_in_batch += 1;
                 if !count_only {
-                    Self::append_row(
-                        timestamp,
-                        &value,
-                        needs,
-                        &mut all_topics,
-                        &mut all_timestamps,
-                        &mut all_year,
-                        &mut all_month,
-                        &mut all_days,
-                        &mut all_payloads,
-                    );
+                    Self::append_row(timestamp, &value, needs, &mut builders);
                 }
             }
 
@@ -592,20 +593,21 @@ impl Stream for LevelDBStream {
                 let mut result: Vec<ArrayRef> = Vec::new();
                 for f in this.projected_schema.fields().iter() {
                     match f.name().as_str() {
-                        "topic" => result.push(Arc::new(all_topics.take().unwrap().finish())),
+                        "topic" => result.push(Arc::new(builders.topics.take().unwrap().finish())),
                         "timestamp" => {
-                            result.push(Arc::new(all_timestamps.take().unwrap().finish()))
+                            result.push(Arc::new(builders.timestamps.take().unwrap().finish()))
                         }
-                        "year" => result.push(Arc::new(all_year.take().unwrap().finish())),
-                        "month" => result.push(Arc::new(all_month.take().unwrap().finish())),
-                        "day" => result.push(Arc::new(all_days.take().unwrap().finish())),
-                        "payload" => result.push(Arc::new(all_payloads.take().unwrap().finish())),
+                        "year" => result.push(Arc::new(builders.year.take().unwrap().finish())),
+                        "month" => result.push(Arc::new(builders.month.take().unwrap().finish())),
+                        "day" => result.push(Arc::new(builders.days.take().unwrap().finish())),
+                        "payload" => {
+                            result.push(Arc::new(builders.payloads.take().unwrap().finish()))
+                        }
                         other => {
                             return Poll::Ready(Some(Err(
                                 datafusion::error::DataFusionError::Internal(format!(
                                     "unknown history column {other}"
-                                ))
-                                .into(),
+                                )),
                             )));
                         }
                     }
@@ -657,7 +659,6 @@ impl ExecutionPlan for CustomExec {
             self.db.inner.database.clone(),
             self.schema(),
             self.projected_schema.clone(),
-            self.projection.clone(),
             self.pushdown.clone(),
         )?;
 
@@ -795,41 +796,27 @@ mod pushdown_tests {
 
 #[tokio::test]
 async fn test_custom_history_dataframe() -> Result<()> {
-    let init = History::init().unwrap();
+    let init = History::init_for_test().unwrap();
+    init.store_event_with_timestamp(42, "a".into(), b"payload")
+        .unwrap();
     let ctx = SessionContext::new();
-    let db: CustomDataSource = CustomDataSource { inner: init };
+    ctx.register_table(
+        TableReference::bare("history"),
+        Arc::new(CustomDataSource { inner: init }),
+    )?;
 
-    let logical_plan = LogicalPlanBuilder::scan_with_filters(
-        "history",
-        provider_as_source(Arc::new(db)),
-        None,
-        vec![],
-    )?
-    .build()?;
-
-    let mut dataframe = DataFrame::new(ctx.state(), logical_plan).select_columns(&[
-        "topic",
-        "timestamp",
-        "year",
-        "month",
-        "day",
-        "payload",
-    ])?;
-
-    timeout(Duration::from_secs(10), async move {
-        let result = dataframe.collect().await.unwrap();
-        let record_batch = result.first().unwrap();
-        dbg!(record_batch.columns());
-    })
-    .await
-    .unwrap();
-
+    let df = ctx
+        .sql("SELECT topic, timestamp, year, month, day, payload FROM history")
+        .await?;
+    let batches = df.collect().await?;
+    assert_eq!(batches.len(), 1);
+    assert_eq!(batches[0].num_rows(), 1);
     Ok(())
 }
 
 #[tokio::test]
 async fn test_sql_history_dataframe() -> Result<()> {
-    let init = History::init().unwrap();
+    let init = History::init_for_test().unwrap();
     let ctx = SessionContext::new();
     let db = CustomDataSource { inner: init };
 
@@ -876,7 +863,7 @@ async fn test_sql_create_external() -> Result<()> {
 
 #[tokio::test]
 async fn test_count_star_from_history() -> Result<()> {
-    let init = History::init().unwrap();
+    let init = History::init_for_test().unwrap();
     let ctx = SessionContext::new();
     let db = CustomDataSource { inner: init };
     ctx.register_table(TableReference::bare("history"), Arc::new(db))?;
@@ -889,7 +876,7 @@ async fn test_count_star_from_history() -> Result<()> {
 
 #[tokio::test]
 async fn test_avg_timestamp_from_history() -> Result<()> {
-    let init = History::init().unwrap();
+    let init = History::init_for_test().unwrap();
     let ctx = SessionContext::new();
     let db = CustomDataSource { inner: init };
     ctx.register_table(TableReference::bare("history"), Arc::new(db))?;
@@ -902,7 +889,7 @@ async fn test_avg_timestamp_from_history() -> Result<()> {
 
 #[tokio::test]
 async fn test_avg_literal_from_history() -> Result<()> {
-    let init = History::init().unwrap();
+    let init = History::init_for_test().unwrap();
     let ctx = SessionContext::new();
     let db = CustomDataSource { inner: init };
     ctx.register_table(TableReference::bare("history"), Arc::new(db))?;

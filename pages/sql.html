@@ -1,0 +1,429 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SQL playground — rsiotmonitor</title>
+    <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+    <style>
+        :root {
+            --bg: #f0f2f5;
+            --card: #fff;
+            --border: #d0d7de;
+            --text: #24292f;
+            --muted: #57606a;
+            --accent: #0969da;
+            --danger: #cf222e;
+            --ok: #1a7f37;
+        }
+        * { box-sizing: border-box; }
+        body {
+            font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, sans-serif;
+            margin: 0;
+            padding: 1rem 1.25rem 2rem;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.45;
+        }
+        h1 { font-size: 1.35rem; margin: 0 0 0.35rem; font-weight: 650; }
+        .sub { color: var(--muted); font-size: 0.9rem; margin-bottom: 1rem; }
+        .sub a { color: var(--accent); }
+        .card {
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 1rem 1.1rem;
+            margin-bottom: 1rem;
+            box-shadow: 0 1px 2px rgba(0,0,0,.04);
+        }
+        label { display: block; font-size: 0.8rem; font-weight: 600; color: var(--muted); margin-bottom: 0.25rem; }
+        input[type="text"],
+        input[type="number"],
+        input[type="url"],
+        select,
+        textarea {
+            width: 100%;
+            font: inherit;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 0.45rem 0.55rem;
+        }
+        textarea {
+            min-height: 11rem;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            font-size: 0.85rem;
+            resize: vertical;
+            tab-size: 2;
+        }
+        input[type="number"] { max-width: 8rem; }
+        .row { display: flex; flex-wrap: wrap; gap: 0.75rem 1rem; align-items: flex-end; margin-bottom: 0.75rem; }
+        .row > .field { flex: 1 1 12rem; }
+        .row > .field.narrow { flex: 0 0 auto; }
+        .toolbar { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
+        button, .btn {
+            font: inherit;
+            font-weight: 600;
+            padding: 0.5rem 1rem;
+            border-radius: 6px;
+            border: 1px solid var(--border);
+            background: #f6f8fa;
+            color: var(--text);
+            cursor: pointer;
+        }
+        button.primary {
+            border-color: var(--accent);
+            background: var(--accent);
+            color: #fff;
+        }
+        button:hover { filter: brightness(0.98); }
+        button.primary:hover { filter: brightness(1.05); }
+        button:disabled { opacity: 0.55; cursor: not-allowed; filter: none; }
+        .hint { font-size: 0.8rem; color: var(--muted); margin-top: 0.35rem; }
+        .status {
+            padding: 0.6rem 0.75rem;
+            border-radius: 6px;
+            font-size: 0.88rem;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+        .status.error { background: #ffebe9; border: 1px solid #ff818266; color: var(--danger); }
+        .status.ok { background: #dafbe1; border: 1px solid #4ac26b66; color: var(--ok); }
+        .status.info { background: #ddf4ff; border: 1px solid #54a3f666; color: #0550ae; }
+        .table-wrap {
+            overflow: auto;
+            max-height: min(70vh, 720px);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+        }
+        table { border-collapse: collapse; width: 100%; font-size: 0.8rem; }
+        th, td {
+            border: 1px solid var(--border);
+            padding: 0.35rem 0.5rem;
+            text-align: left;
+            vertical-align: top;
+        }
+        th {
+            background: #f6f8fa;
+            position: sticky;
+            top: 0;
+            z-index: 1;
+            font-weight: 600;
+        }
+        tr:nth-child(even) td { background: #fafbfc; }
+        .hidden { display: none !important; }
+        code { font-size: 0.85em; }
+        details { font-size: 0.85rem; color: var(--muted); margin-top: 0.5rem; }
+        details summary { cursor: pointer; user-select: none; }
+        #request-url { word-break: break-all; font-family: ui-monospace, monospace; font-size: 0.78rem; }
+    </style>
+</head>
+<body>
+    <h1>SQL playground</h1>
+    <p class="sub">
+        DataFusion via <code>GET /sql/&lt;encoded SQL&gt;</code> (CSV).
+        Served from this host — default API is <strong id="origin-label"></strong>.
+        <a href="/">Home</a>
+    </p>
+
+    <div class="card">
+        <div class="row">
+            <div class="field narrow">
+                <label for="sample-select">Sample query</label>
+                <select id="sample-select">
+                    <option value="">— pick a template —</option>
+                    <option value="describe_history">DESCRIBE history</option>
+                    <option value="describe_archive">DESCRIBE history_archive</option>
+                    <option value="count_history">COUNT(*) today (history)</option>
+                    <option value="count_archive">COUNT(*) archive (limit partition)</option>
+                    <option value="esp13_presence">esp13 presence (today, limit 20)</option>
+                    <option value="topics">Distinct topics (today, limit 50)</option>
+                </select>
+            </div>
+            <div class="field narrow">
+                <label for="max-rows">Max rows shown</label>
+                <input type="number" id="max-rows" min="1" max="1000000" step="1" value="500" />
+            </div>
+        </div>
+
+        <div class="field" style="margin-bottom:0.75rem">
+            <label for="sql-input">SQL</label>
+            <textarea id="sql-input" spellcheck="false" placeholder="DESCRIBE history"></textarea>
+            <p class="hint">Ctrl+Enter to run. Use <code>LIMIT</code> in SQL for heavy queries; the table below also caps displayed rows.</p>
+        </div>
+
+        <div class="toolbar">
+            <button type="button" class="primary" id="run-btn">Run query</button>
+            <button type="button" id="clear-btn">Clear results</button>
+        </div>
+
+        <details id="advanced-details">
+            <summary>Advanced — API base URL</summary>
+            <div class="field" style="margin-top:0.5rem">
+                <label for="base-url">Server base URL (no <code>/sql</code> suffix)</label>
+                <input type="url" id="base-url" autocomplete="off" />
+            </div>
+        </details>
+    </div>
+
+    <div id="status" class="card status hidden" role="status"></div>
+    <div id="result-card" class="card hidden">
+        <div id="result-meta" class="hint" style="margin-bottom:0.5rem"></div>
+        <details open>
+            <summary>Request URL</summary>
+            <div id="request-url"></div>
+        </details>
+        <div class="table-wrap" style="margin-top:0.75rem">
+            <table id="result-table">
+                <thead id="result-thead"></thead>
+                <tbody id="result-tbody"></tbody>
+            </table>
+        </div>
+    </div>
+
+    <script>
+        (function () {
+            var LS_BASE = 'sqlPlaygroundBaseUrl';
+            var LS_SQL = 'sqlPlaygroundLastSql';
+            var LS_MAX = 'sqlPlaygroundMaxRows';
+
+            var SAMPLES = {
+                describe_history: 'DESCRIBE history',
+                describe_archive: 'DESCRIBE history_archive',
+                count_history: 'SELECT count(*) AS n FROM history',
+                count_archive:
+                    'SELECT count(*) AS n FROM history_archive\nWHERE year = 2026 AND month = 5 AND day = 30',
+                esp13_presence:
+                    "SELECT\n  arrow_cast(timestamp, 'Timestamp(Microsecond,None)') AS event_time,\n  arrow_cast(arrow_cast(payload, 'Utf8'), 'Int32') AS presence_code\nFROM history\nWHERE topic = 'home/esp13/sensors/presence'\nLIMIT 20",
+                topics:
+                    'SELECT topic, count(*) AS n\nFROM history\nGROUP BY topic\nORDER BY n DESC\nLIMIT 50'
+            };
+
+            var baseEl = document.getElementById('base-url');
+            var maxEl = document.getElementById('max-rows');
+            var sqlEl = document.getElementById('sql-input');
+            var sampleEl = document.getElementById('sample-select');
+            var runBtn = document.getElementById('run-btn');
+            var clearBtn = document.getElementById('clear-btn');
+            var statusEl = document.getElementById('status');
+            var resultCard = document.getElementById('result-card');
+            var resultMeta = document.getElementById('result-meta');
+            var requestUrlEl = document.getElementById('request-url');
+            var thead = document.getElementById('result-thead');
+            var tbody = document.getElementById('result-tbody');
+            var originLabel = document.getElementById('origin-label');
+
+            function defaultBase() {
+                return window.location.origin && window.location.origin !== 'null'
+                    ? window.location.origin
+                    : 'http://127.0.0.1:3000';
+            }
+
+            function loadPrefs() {
+                originLabel.textContent = defaultBase();
+                try {
+                    var b = localStorage.getItem(LS_BASE);
+                    baseEl.value = b || defaultBase();
+                    var s = localStorage.getItem(LS_SQL);
+                    if (s) sqlEl.value = s;
+                    var m = localStorage.getItem(LS_MAX);
+                    if (m && !isNaN(Number(m))) {
+                        maxEl.value = String(Math.max(1, Math.min(1000000, parseInt(m, 10))));
+                    }
+                } catch (e) { /* ignore */ }
+                if (!sqlEl.value.trim()) {
+                    sqlEl.value = SAMPLES.describe_history;
+                }
+            }
+
+            function savePrefs() {
+                try {
+                    localStorage.setItem(LS_BASE, baseEl.value.trim());
+                    localStorage.setItem(LS_SQL, sqlEl.value);
+                    localStorage.setItem(LS_MAX, maxEl.value);
+                } catch (e) { /* ignore */ }
+            }
+
+            function showStatus(cls, text) {
+                statusEl.className = 'card status ' + cls;
+                statusEl.textContent = text;
+                statusEl.classList.remove('hidden');
+            }
+
+            function hideStatus() {
+                statusEl.classList.add('hidden');
+            }
+
+            function clearTable() {
+                thead.innerHTML = '';
+                tbody.innerHTML = '';
+                requestUrlEl.textContent = '';
+                resultCard.classList.add('hidden');
+            }
+
+            function parseMaxRows() {
+                var n = parseInt(maxEl.value, 10);
+                if (isNaN(n) || n < 1) n = 500;
+                if (n > 1000000) n = 1000000;
+                return n;
+            }
+
+            function buildSqlUrl(base, sql) {
+                var trimmed = base.replace(/\s+$/, '').replace(/\/+$/, '');
+                return trimmed + '/sql/' + encodeURIComponent(sql.trim());
+            }
+
+            function applyQueryParams() {
+                var q = new URLSearchParams(window.location.search);
+                if (q.get('base')) baseEl.value = q.get('base');
+                if (q.get('max')) maxEl.value = q.get('max');
+                if (q.get('sql')) sqlEl.value = q.get('sql');
+            }
+
+            function runQuery() {
+                var sql = sqlEl.value;
+                var base = baseEl.value.trim() || defaultBase();
+                if (!sql.trim()) {
+                    showStatus('error', 'Please enter a SQL statement.');
+                    return;
+                }
+                if (typeof Papa === 'undefined') {
+                    showStatus('error', 'Papa Parse failed to load (check network / CDN).');
+                    return;
+                }
+
+                var maxRows = parseMaxRows();
+                savePrefs();
+                hideStatus();
+                clearTable();
+                runBtn.disabled = true;
+
+                var url = buildSqlUrl(base, sql);
+                var t0 = performance.now();
+
+                fetch(url, {
+                    method: 'GET',
+                    credentials: 'omit',
+                    headers: { Accept: 'text/csv, text/plain; charset=utf-8;q=0.9, */*;q=0.1' }
+                })
+                    .then(function (res) {
+                        return res.text().then(function (body) {
+                            if (!res.ok) {
+                                var err = new Error('HTTP ' + res.status + ' ' + (res.statusText || ''));
+                                err.body = body;
+                                throw err;
+                            }
+                            return body;
+                        });
+                    })
+                    .then(function (csvText) {
+                        var ms = Math.round(performance.now() - t0);
+                        if (/^processing error:/i.test(csvText.trim())) {
+                            throw new Error(csvText.trim());
+                        }
+
+                        var parsed = Papa.parse(csvText, {
+                            delimiter: ',',
+                            header: true,
+                            skipEmptyLines: 'greedy',
+                            dynamicTyping: true
+                        });
+                        if (parsed.errors && parsed.errors.length) {
+                            var fatal = parsed.errors.filter(function (e) {
+                                if (e.type === 'Delimiter' && e.code === 'UndetectableDelimiter') return false;
+                                return e.type === 'Quotes' || e.type === 'Delimiter' || e.type === 'FieldMismatch';
+                            });
+                            if (fatal.length) {
+                                throw new Error('CSV parse: ' + fatal[0].message);
+                            }
+                        }
+
+                        var rows = Array.isArray(parsed.data) ? parsed.data : [];
+                        var total = rows.length;
+                        var shown = rows.slice(0, maxRows);
+
+                        requestUrlEl.textContent = url;
+                        resultCard.classList.remove('hidden');
+
+                        if (shown.length === 0) {
+                            showStatus('info', 'Query finished in ' + ms + ' ms — empty result set.');
+                            resultMeta.textContent = '0 rows';
+                            return;
+                        }
+
+                        var keys = Object.keys(shown[0]);
+                        var trh = document.createElement('tr');
+                        keys.forEach(function (k) {
+                            var th = document.createElement('th');
+                            th.textContent = k;
+                            trh.appendChild(th);
+                        });
+                        thead.appendChild(trh);
+
+                        shown.forEach(function (row) {
+                            var tr = document.createElement('tr');
+                            keys.forEach(function (k) {
+                                var td = document.createElement('td');
+                                var v = row[k];
+                                if (v == null) td.textContent = '';
+                                else if (typeof v === 'object') td.textContent = JSON.stringify(v);
+                                else td.textContent = String(v);
+                                tr.appendChild(td);
+                            });
+                            tbody.appendChild(tr);
+                        });
+
+                        var meta =
+                            ms + ' ms — ' +
+                            (total > maxRows
+                                ? 'showing ' + maxRows + ' of ' + total + ' row(s)'
+                                : total + ' row(s)');
+                        resultMeta.textContent = meta;
+                        showStatus('ok', 'OK — ' + meta);
+                    })
+                    .catch(function (err) {
+                        console.error(err);
+                        var msg = err && err.message ? err.message : String(err);
+                        if (err && err.body) {
+                            msg += '\n\n' + (err.body.length > 4000 ? err.body.slice(0, 4000) + '\n…' : err.body);
+                        }
+                        requestUrlEl.textContent = url;
+                        resultCard.classList.remove('hidden');
+                        showStatus('error', msg);
+                    })
+                    .finally(function () {
+                        runBtn.disabled = false;
+                    });
+            }
+
+            loadPrefs();
+            applyQueryParams();
+
+            runBtn.addEventListener('click', runQuery);
+            clearBtn.addEventListener('click', function () {
+                hideStatus();
+                clearTable();
+            });
+
+            sampleEl.addEventListener('change', function () {
+                var key = sampleEl.value;
+                if (key && SAMPLES[key]) {
+                    sqlEl.value = SAMPLES[key];
+                    sqlEl.focus();
+                }
+                sampleEl.value = '';
+            });
+
+            sqlEl.addEventListener('keydown', function (ev) {
+                if ((ev.ctrlKey || ev.metaKey) && ev.key === 'Enter') {
+                    ev.preventDefault();
+                    runQuery();
+                }
+            });
+
+            maxEl.addEventListener('change', function () {
+                maxEl.value = String(parseMaxRows());
+            });
+        })();
+    </script>
+</body>
+</html>

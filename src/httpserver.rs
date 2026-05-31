@@ -1,7 +1,6 @@
 use actix_cors::Cors;
 use actix_files::Files;
 use actix_web::{
-    http::{self, header::Header},
     web::Bytes,
     App, HttpResponseBuilder, HttpServer,
 };
@@ -15,10 +14,7 @@ use std::{
     io::{BufWriter, IntoInnerError},
     net::{IpAddr, SocketAddr},
     path::PathBuf,
-    pin::Pin,
-    process::Output,
     sync::{Arc, OnceLock},
-    task::{Context, Poll},
     time::{Duration, Instant},
 };
 
@@ -28,18 +24,13 @@ use crate::history::{create_history_sql_session, History, HistoryAnalyticProfile
 
 use datafusion::{
     arrow::array::RecordBatch,
-    dataframe::DataFrame,
     error::DataFusionError,
-    execution::{context::SessionContext, SendableRecordBatchStream},
 };
 
 use actix_web::{
     error, get,
-    http::{
-        header::{self, ContentType},
-        Method, StatusCode,
-    },
-    middleware, web, Either, HttpRequest, HttpResponse, Responder, Result,
+    http::StatusCode,
+    middleware, web, HttpRequest, HttpResponse, Result,
 };
 
 use derive_more::{Display, Error};
@@ -62,7 +53,7 @@ impl From<DataFusionError> for HttpProcessingError {
     fn from(value: DataFusionError) -> Self {
         let message = format!("{}", &value);
         Self {
-            name: String::from(message),
+            name: message,
         }
     }
 }
@@ -71,7 +62,7 @@ impl From<ArrowError> for HttpProcessingError {
     fn from(value: ArrowError) -> Self {
         let message = format!("{}", &value);
         Self {
-            name: String::from(message),
+            name: message,
         }
     }
 }
@@ -79,7 +70,7 @@ impl From<ArrowError> for HttpProcessingError {
 impl<T> From<IntoInnerError<T>> for HttpProcessingError {
     fn from(value: IntoInnerError<T>) -> Self {
         Self {
-            name: String::from(format!("{}", &value)),
+            name: format!("{}", &value),
         }
     }
 }
@@ -87,7 +78,7 @@ impl<T> From<IntoInnerError<T>> for HttpProcessingError {
 impl From<Box<dyn std::error::Error>> for HttpProcessingError {
     fn from(value: Box<dyn std::error::Error>) -> Self {
         Self {
-            name: String::from(format!("{}", &value)),
+            name: format!("{}", &value),
         }
     }
 }
@@ -98,7 +89,8 @@ impl error::ResponseError for HttpProcessingError {}
 ///////////////////////////////////////////////////////////////////////////////////////////
 // server implementation
 
-const TIMEOUT_TO_ACQUIRE_SLOT: Duration = Duration::from_millis(100);
+/// Default wait between attempts to acquire a concurrent SQL query slot.
+pub const DEFAULT_TIMEOUT_TO_ACQUIRE_SLOT: Duration = Duration::from_millis(100);
 
 // Static semaphore for limiting concurrent requests
 static CONCURRENT_REQUESTS_SEMAPHORE: OnceLock<Arc<Semaphore>> = OnceLock::new();
@@ -188,7 +180,7 @@ fn stream_recordbatch<S: Stream<Item = Result<RecordBatch, DataFusionError>>>(
                 if stream_start.elapsed() > timeout_duration {
                     log::warn!("Stream timeout exceeded after {:?}, stopping stream", timeout_duration);
                     let timeout_error = HttpProcessingError {
-                        name: format!("Stream timeout exceeded after {} seconds", timeout_duration.as_secs()).into(),
+                        name: format!("Stream timeout exceeded after {} seconds", timeout_duration.as_secs()),
                     };
                     yield Err(timeout_error.into());
                     break;
@@ -206,7 +198,7 @@ fn stream_recordbatch<S: Stream<Item = Result<RecordBatch, DataFusionError>>>(
                         match writer.write(&r) {
                              Err(e) => {
                                  let msg = format!("erreur in fetching : {}", e);
-                                 let new_error = HttpProcessingError { name: msg.into()};
+                                 let new_error = HttpProcessingError { name: msg};
                                  log::error!("{}", new_error);
                                  Err(new_error.into())
                              }
@@ -217,7 +209,7 @@ fn stream_recordbatch<S: Stream<Item = Result<RecordBatch, DataFusionError>>>(
                                     }
                                     Err(e) => {
                                         let msg = format!("erreur in fetching : {}", e);
-                                        let new_error = HttpProcessingError {  name: msg.into()};
+                                        let new_error = HttpProcessingError {  name: msg};
                                         log::error!("{}", new_error);
                                         Err(new_error.into())
                                     }
@@ -227,7 +219,7 @@ fn stream_recordbatch<S: Stream<Item = Result<RecordBatch, DataFusionError>>>(
                     }
                     Err(e) => {
                         let msg = format!("error in streaming record batch: {}", e);
-                        let new_error = HttpProcessingError { name: msg.into() };
+                        let new_error = HttpProcessingError { name: msg };
                         log::error!("{}", new_error);
                         Err(new_error.into())
                     }
@@ -297,8 +289,7 @@ async fn sql_query(
         Err(_) => {
             return Err(HttpProcessingError {
                 name: "error, too many concurrent requests".into(),
-            })
-            .into();
+            });
         }
     };
 
@@ -380,9 +371,8 @@ async fn sql_query(
             // query failed - permit will be dropped when function returns
             log::error!("error, query failed: {}", e);
             return Err(HttpProcessingError {
-                name: format!("error, query failed: {}", e).into(),
-            })
-            .into();
+                name: format!("error, query failed: {}", e),
+            });
         }
         Err(e) => {
             // timeout hit - permit will be dropped when function returns
@@ -397,16 +387,14 @@ async fn sql_query(
                     "error, query timed out after {} seconds: {}",
                     app_data.config.sql_endpoint_config.timeout_to_execute_query.as_secs(),
                     e
-                )
-                .into(),
-            })
-            .into();
+                ),
+            });
         }
     };
 
     // Note: semaphore permit is held by the stream wrapper and will be released
     // when the stream completes (when the HTTP response finishes)
-    return Ok(response);
+    Ok(response)
 }
 
 /// Directory for static HTML/assets, served at `/` (fallback after `/sql/…`).
@@ -454,7 +442,7 @@ fn prepare_pages_root() -> Option<PathBuf> {
 /// `history_db` is optional: the server still listens so `/sql` can respond when history is configured later; without history, queries return an error.
 pub async fn server_start(config: HttpServerConfig, history_db: Option<Arc<History>>) {
     // And run our service using `actix`
-    let addr = SocketAddr::from(config.v4_binding.clone());
+    let addr = SocketAddr::from(config.v4_binding);
 
     // Initialize the static semaphore
     CONCURRENT_REQUESTS_SEMAPHORE
@@ -506,7 +494,13 @@ pub async fn server_start(config: HttpServerConfig, history_db: Option<Arc<Histo
         app
     })
     .bind(addr)
-    .expect("fail to bind")
+    .unwrap_or_else(|e| {
+        panic!(
+            "failed to bind HTTP server on {addr}: {e}. \
+             Port may already be in use (check with `ss -tlnp | grep {port}` or change `[http] port` in config.toml)",
+            port = addr.port()
+        );
+    })
     .run()
     .await
     .unwrap();

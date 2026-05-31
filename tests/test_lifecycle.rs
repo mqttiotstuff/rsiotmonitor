@@ -1,17 +1,11 @@
+#![allow(dead_code)]
 
+struct A {}
 
-
-
-struct A {
-
-}
-
-impl <'a> A {
-    pub fn iter(&'a self) -> ItA<'a> {
-        ItA {
-            refa: self,
-        }
-    } 
+impl A {
+    fn iter(&self) -> ItA<'_> {
+        ItA { refa: self }
+    }
 }
 
 struct ItA<'a> {
@@ -19,10 +13,7 @@ struct ItA<'a> {
 }
 
 #[test]
-pub fn test() {
-
-
-
-
+fn test_lifecycle_iterator() {
+    let a = A {};
+    let _it = a.iter();
 }
-

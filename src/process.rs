@@ -197,7 +197,7 @@ pub fn get_process_statistics(pid: u32) -> Result<ProcessStatistics, Box<dyn Err
                     }));
                 }
             };
-            return Ok(value as u64 * unit_factor / 1024); // normalize to kB
+            return Ok(value * unit_factor / 1024); // normalize to kB
         }
         log::debug!("in parse_value_with_units, unrecognized value: {}", value);
         Err(Box::new(ProcessError {
@@ -443,8 +443,14 @@ pub fn get_process_statistics(pid: u32) -> Result<ProcessStatistics, Box<dyn Err
             
             // Only calculate if we have valid elapsed time (at least 0.1 seconds)
             if elapsed >= 0.1 {
-                if let Some(_) = process_statistics.calculate_cpu_percentage(previous_stats, elapsed) {
-                    log::debug!("Calculated CPU percentage for pid {}: {:?}%", pid, process_statistics.cpu_percentage);
+                if let Some(cpu) =
+                    process_statistics.calculate_cpu_percentage(previous_stats, elapsed)
+                {
+                    log::debug!(
+                        "Calculated CPU percentage for pid {}: {:?}%",
+                        pid,
+                        cpu
+                    );
                 }
             }
         }
@@ -579,7 +585,7 @@ impl Error for ProcessError {}
 
 /// create the process, using fork
 pub fn run_process_with_fork(
-    name: &String,
+    name: &str,
     processinfo: &mut AdditionalProcessInformation,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let magicprocessheader: String = String::from(MAGIC) + "_";
@@ -635,7 +641,7 @@ pub fn run_process_with_fork(
 
 /// launch the process with the IOTMONITORING tag
 pub fn launch_process(
-    name: &String,
+    name: &str,
     processinfo: &mut AdditionalProcessInformation,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     let magicprocessheader: String = String::from(MAGIC) + "_";
@@ -649,7 +655,7 @@ pub fn launch_process(
     // construct command line
 
     let mut cmd = Command::new("bash");
-    let all = cmd.args(["-c", &exec]).env("IOTMONITORMAGIC", name.clone());
+    let all = cmd.args(["-c", &exec]).env("IOTMONITORMAGIC", name);
 
     // Specify that we want the command's standard output piped back to us.
     // By default, standard input/output/error will be inherited from the
@@ -680,7 +686,7 @@ pub fn launch_process(
         info!("child ended, with status was: {}", status);
     });
 
-    let processname = name.clone();
+    let processname = name.to_string();
     tokio::spawn(async move {
         let mut s: String = "".into();
         while let Ok(size) = reader.read_line(&mut s).await {

@@ -10,7 +10,7 @@ edition = "2018"
 
 [dependencies]
 bytes = "1"
-env_logger = "0.8.4"
+env_logger = "0.11"
 futures = "0.3"
 log = "0.4"
 mqtt-v5 = { path = "../mqtt-v5", version = "0.2" }

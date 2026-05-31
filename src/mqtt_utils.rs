@@ -1,7 +1,7 @@
 #[allow(unused_imports)]
 use log::{debug, error, info, trace, warn};
 use mqtt_async_client::client::{Client, KeepAlive, QoS};
-use rustls::{pki_types::TrustAnchor, ClientConfig, RootCertStore};
+use rustls::{ClientConfig, RootCertStore};
 use std::{fs::File, io::BufReader, time::Duration};
 
 // #[cfg(feature = "tls")]
@@ -104,34 +104,22 @@ pub fn int_to_qos(qos: u8) -> QoS {
     }
 }
 
-/**
- * does the evaluated topic contains the tested_topic match
- */
-pub fn does_topic_match(tested_topic: &String, evaluated_topic: &String) -> bool {
-    let mut tested = tested_topic.clone();
-    if tested_topic.ends_with('#') {
-        tested = (tested[0..tested.len() - 1]).to_string();
-        evaluated_topic.starts_with(&tested)
-    } else if tested_topic.eq("") {
+/// Whether `evaluated_topic` matches the MQTT filter `tested_topic`.
+pub fn does_topic_match(tested_topic: &str, evaluated_topic: &str) -> bool {
+    if let Some(prefix) = tested_topic.strip_suffix('#') {
+        evaluated_topic.starts_with(prefix)
+    } else if tested_topic.is_empty() {
         true
     } else {
-        evaluated_topic.eq(&tested)
+        evaluated_topic == tested_topic
     }
 }
 
-/// Test does_topic_match function
 #[test]
 fn test_does_topic_match() {
-    assert!(!does_topic_match(
-        &"home".to_string(),
-        &"home/toto".to_string()
-    ));
-    assert!(does_topic_match(
-        &"home/#".to_string(),
-        &"home/toto".to_string()
-    ));
-    assert!(!does_topic_match(&"toto".to_string(), &"tutu".to_string()));
-
-    assert!(does_topic_match(&"".to_string(), &"tutu".to_string()));
-    assert!(does_topic_match(&"#".to_string(), &"tutu".to_string()));
+    assert!(!does_topic_match("home", "home/toto"));
+    assert!(does_topic_match("home/#", "home/toto"));
+    assert!(!does_topic_match("toto", "tutu"));
+    assert!(does_topic_match("", "tutu"));
+    assert!(does_topic_match("#", "tutu"));
 }
