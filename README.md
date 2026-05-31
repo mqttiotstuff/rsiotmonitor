@@ -18,6 +18,7 @@ This is new rust implementation of the iotmonitor project.
     
     [x] dynamic query the history, (either a flat parquet file providing, or datafusion arrow flight protocol). may be an inflight sql integration, With a custom source, see the best approach to integrate the query, using datafusion
     or flat parquet file providing, using external softwares.
+    [x] add adbc client and inflight server for metrics query
     [ ] adding a graph client, to display some metrics, directly in the server.
     [ ] managing performance demand / silver data construction
 

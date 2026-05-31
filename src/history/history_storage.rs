@@ -31,11 +31,37 @@ pub struct TopicPayload<'a> {
 }
 
 impl<'a> TopicPayload<'a> {
+    /// Split a LevelDB value into topic and payload bytes without allocating.
+    pub fn split_value(value: &'a [u8]) -> Option<(&'a [u8], &'a [u8])> {
+        if value.len() < 2 {
+            return None;
+        }
+        let topic_size = u16::from_le_bytes(value[0..2].try_into().ok()?) as usize;
+        let end = 2usize.checked_add(topic_size)?;
+        if value.len() < end {
+            return None;
+        }
+        Some((&value[2..end], &value[end..]))
+    }
+
+    pub fn topic_bytes_match(value: &[u8], expected: &[u8]) -> bool {
+        if value.len() < 2 {
+            return false;
+        }
+        let topic_size = match value[0..2].try_into().ok().map(u16::from_le_bytes) {
+            Some(size) => size as usize,
+            None => return false,
+        };
+        let end = match 2usize.checked_add(topic_size) {
+            Some(end) => end,
+            None => return false,
+        };
+        value.len() >= end && &value[2..end] == expected
+    }
+
     pub fn from_u8(key: &'a [u8]) -> TopicPayload<'a> {
-        let tb = key[0..2].try_into().unwrap();
-        let topic_size: usize = u16::from_le_bytes(tb).try_into().unwrap();
-        let topic: String = String::from_utf8(key[2..2 + topic_size].to_vec()).unwrap();
-        let payload = &key[2 + topic_size..];
+        let (topic_bytes, payload) = Self::split_value(key).unwrap();
+        let topic = String::from_utf8(topic_bytes.to_vec()).unwrap();
         TopicPayload { topic, payload }
     }
 
