@@ -15,8 +15,9 @@ use futures_util::{
 use http::request::Request;
 use log::{debug, error, info, trace};
 use mqttrs::{self, ConnectReturnCode, Packet, Pid, QoS, QosPid, SubscribeTopic};
+use rustls::pki_types::ServerName;
+use tokio_rustls::TlsConnector;
 #[cfg(feature = "tls")]
-use rustls;
 use std::{
     cmp::min,
     collections::BTreeMap,
@@ -34,7 +35,7 @@ use tokio::{
     time::{error::Elapsed, sleep, sleep_until, timeout, Duration, Instant},
 };
 #[cfg(feature = "tls")]
-use tokio_rustls::{self, TlsConnector};
+use tokio_rustls::{self};
 #[cfg(feature = "websocket")]
 use tokio_tungstenite::tungstenite::http::Uri;
 use url::Url;
@@ -548,21 +549,24 @@ async fn connect_stream(opts: &ClientOptions) -> Result<AsyncStream> {
     let host = opts
         .url
         .host_str()
-        .ok_or(Error::String("Missing host".to_owned()))?;
+        .ok_or(Error::String("Missing host".to_owned()))?
+        .to_owned();
     match opts.connection_mode {
         #[cfg(feature = "tls")]
         ConnectionMode::Tls(ref c) => {
             let port = opts.url.port().unwrap_or(8883);
             let connector = TlsConnector::from(c.clone());
-            let domain = tokio_rustls::rustls::ServerName::try_from(host)
+            let host_clone = host.clone();
+            let host_clone2 = host_clone.clone();
+            let domain = ServerName::try_from(host_clone)
                 .map_err(|e| Error::from_std_err(e))?;
-            let tcp = TcpStream::connect((host, port)).await?;
+            let tcp = TcpStream::connect((host_clone2, port)).await?;
             let conn = connector.connect(domain, tcp).await?;
             Ok(AsyncStream::TlsStream(conn))
         }
         ConnectionMode::Tcp => {
             let port = opts.url.port().unwrap_or(1883);
-            let tcp = TcpStream::connect((host, port)).await?;
+            let tcp = TcpStream::connect((&*host, port)).await?;
             Ok(AsyncStream::TcpStream(tcp))
         }
         #[cfg(feature = "websocket")]
@@ -576,7 +580,7 @@ async fn connect_stream(opts: &ClientOptions) -> Result<AsyncStream> {
                     .map_or("".to_owned(), |q| format!("?{}", q))
             );
             let tcp_connection =
-                tokio_tungstenite::MaybeTlsStream::Plain(TcpStream::connect((host, port)).await?);
+                tokio_tungstenite::MaybeTlsStream::Plain(TcpStream::connect((&*host, port)).await?);
             let websocket = tokio_tungstenite::client_async(
                 Request::get(
                     Uri::builder()
@@ -602,7 +606,7 @@ async fn connect_stream(opts: &ClientOptions) -> Result<AsyncStream> {
             let tls_stream = TlsConnector::from(c.clone())
                 .connect(
                     DNSNameRef::try_from_ascii_str(host).map_err(|e| Error::from_std_err(e))?,
-                    TcpStream::connect((host, port)).await?,
+                    TcpStream::connect((&*host, port)).await?,
                 )
                 .await?;
             let path_and_query = format!(

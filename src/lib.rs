@@ -1,6 +1,4 @@
-///
-/// module for browing process and command line, and launch registered agents
-///
+//! Module for browsing process and command line, and launching registered agents.
 pub mod process;
 
 pub mod state;
@@ -22,20 +20,43 @@ use std::{
 use derivative::Derivative;
 use history::History;
 
+/// 
 /// General iotmonitor configuration, with mqtt configuration and monitored device or agents
+/// 
 #[derive(Derivative)]
 #[derivative(Debug)]
 pub struct IOTMonitor {
     /// broker connection properties
     pub mqtt_config: crate::config::MqttConfig,
 
+    /// history topic
     pub history_topic: Option<String>,
 
+    /// history database
     #[derivative(Debug = "ignore")]
     pub history: Option<Arc<History>>,
 
+    /// Arrow Flight SQL bind address from `config.toml` `[analytic]` `flightSqlBind`. Overridden by `--flight-sql-bind` when that flag is set.
+    pub flight_sql_bind: Option<String>,
+
+    /// HTTP bind address from `config.toml` `[http]` `bind`. Overridden by `--http-server-address` when set.
+    pub http_bind: Option<String>,
+
+    /// HTTP port from `config.toml` `[http]` `port`. Overridden by `--http-server-port` when set.
+    pub http_port: Option<u16>,
+
+    /// `[analytic]` `timeoutToExecuteQuery` (seconds). Overridden by CLI when that flag is passed.
+    pub analytic_timeout_execute_secs: Option<u64>,
+    /// `[analytic]` `timeoutToStream` (seconds). Overridden by CLI when set.
+    pub analytic_timeout_stream_secs: Option<u64>,
+    /// `[analytic]` `maxSimultaneousQueries`. Overridden by CLI when set.
+    pub analytic_max_simultaneous_queries: Option<usize>,
+    /// `[analytic]` `smallProfile`. Overridden by CLI `--analytic-small-profile` / `--analytic-small-profile false` when used.
+    pub analytic_small_profile: Option<bool>,
+
+    /// state connection
     #[derivative(Debug = "ignore")]
-    pub state_connection: Option<Arc<sqlite::ConnectionWithFullMutex>>,
+    pub state_connection: Option<Arc<sqlite::ConnectionThreadSafe>>,
 
     /// monitored elements
     monitored_devices: HashMap<String, Box<MonitoringInfo>>,
@@ -43,11 +64,19 @@ pub struct IOTMonitor {
 
 impl IOTMonitor {
     /// initialize the structure with no active database connection
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         mqtt_config: crate::config::MqttConfig,
         monitored_devices: HashMap<String, Box<MonitoringInfo>>,
         history_topic: Option<String>,
         history: Option<Arc<History>>,
+        flight_sql_bind: Option<String>,
+        http_bind: Option<String>,
+        http_port: Option<u16>,
+        analytic_timeout_execute_secs: Option<u64>,
+        analytic_timeout_stream_secs: Option<u64>,
+        analytic_max_simultaneous_queries: Option<usize>,
+        analytic_small_profile: Option<bool>,
     ) -> Self {
         // return the IOTMonitor structure
         IOTMonitor {
@@ -56,6 +85,13 @@ impl IOTMonitor {
             state_connection: None,
             history_topic,
             history,
+            flight_sql_bind,
+            http_bind,
+            http_port,
+            analytic_timeout_execute_secs,
+            analytic_timeout_stream_secs,
+            analytic_max_simultaneous_queries,
+            analytic_small_profile,
         }
     }
 

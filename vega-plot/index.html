@@ -1,0 +1,1744 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard MQTT Hive</title>
+    <script src="https://cdn.jsdelivr.net/npm/vega@5"></script>
+    <script src="https://cdn.jsdelivr.net/npm/vega-lite@5"></script>
+    <script src="https://cdn.jsdelivr.net/npm/vega-embed@6"></script>
+    <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: min(96vw, 1680px);
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        h1 {
+            color: #333;
+        }
+        .container {
+            background-color: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+        }
+        .status {
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 4px;
+        }
+        .status.loading {
+            background-color: #e3f2fd;
+            color: #1976d2;
+        }
+        .status.error {
+            background-color: #ffebee;
+            color: #c62828;
+        }
+        button {
+            background-color: #1976d2;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        button:hover {
+            background-color: #1565c0;
+        }
+        button:disabled {
+            background-color: #ccc;
+            cursor: not-allowed;
+        }
+        /* Vega mount: grows within flex chart-slot; min-width 0 lets row layouts shrink without overflow */
+        .chart-wrap {
+            position: relative;
+            display: flex;
+            flex-direction: column;
+            flex: 1 1 auto;
+            align-self: stretch;
+            min-width: 0;
+            min-height: 240px;
+        }
+        .chart-wrap .chart-vega-host {
+            flex: 1 1 auto;
+            min-width: 0;
+            min-height: 0;
+        }
+        .chart-export-toolbar {
+            position: absolute;
+            top: 8px;
+            right: 8px;
+            z-index: 9;
+            display: flex;
+            gap: 6px;
+            align-items: center;
+        }
+        .chart-export-btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 34px;
+            height: 34px;
+            padding: 0;
+            border: 1px solid #ccc;
+            border-radius: 6px;
+            background: #fff;
+            color: #37474f;
+            cursor: pointer;
+            box-sizing: border-box;
+        }
+        .chart-export-btn:hover:not(:disabled) {
+            background: #e3f2fd;
+            border-color: #90caf9;
+            color: #1565c0;
+        }
+        .chart-export-btn:disabled {
+            opacity: 0.45;
+            cursor: not-allowed;
+        }
+        .chart-export-btn svg {
+            display: block;
+            pointer-events: none;
+        }
+        .loader-overlay {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 12px;
+            background: rgba(255, 255, 255, 0.92);
+            z-index: 10;
+            border-radius: 4px;
+        }
+        .loader-overlay.hidden {
+            display: none;
+        }
+        .loader-overlay .spinner {
+            width: 40px;
+            height: 40px;
+            border: 3px solid #e3f2fd;
+            border-top-color: #1976d2;
+            border-radius: 50%;
+            animation: spin 0.75s linear infinite;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        .loader-overlay span {
+            color: #1976d2;
+            font-size: 14px;
+        }
+        .chart-error {
+            flex-shrink: 0;
+            margin-bottom: 12px;
+        }
+        .chart-error.hidden {
+            display: none;
+        }
+        .chart-error pre {
+            margin: 8px 0 0;
+            padding: 10px;
+            background: #fff;
+            border: 1px solid #ffcdd2;
+            border-radius: 4px;
+            font-size: 12px;
+            line-height: 1.4;
+            white-space: pre-wrap;
+            word-break: break-word;
+            max-height: 280px;
+            overflow: auto;
+        }
+        .chart-error .chart-error-retry {
+            margin-top: 12px;
+        }
+        #meta-error {
+            margin-bottom: 20px;
+        }
+        #meta-error.hidden {
+            display: none;
+        }
+        #meta-error pre {
+            margin: 8px 0 0;
+            padding: 10px;
+            background: #fff;
+            border: 1px solid #ffcdd2;
+            border-radius: 4px;
+            font-size: 12px;
+            white-space: pre-wrap;
+            word-break: break-word;
+            max-height: 200px;
+            overflow: auto;
+        }
+        .screen-nav {
+            margin-top: 16px;
+        }
+        .screen-nav ul {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px 16px;
+        }
+        .screen-nav a {
+            color: #1565c0;
+            text-decoration: none;
+            border-bottom: 1px solid transparent;
+        }
+        .screen-nav a:hover {
+            border-bottom-color: #1565c0;
+        }
+        .screen {
+            scroll-margin-top: 16px;
+        }
+        .screen h2 {
+            margin-top: 0;
+            color: #333;
+            font-size: 1.25rem;
+        }
+        .screen-desc {
+            color: #555;
+            margin: 0 0 16px;
+            font-size: 14px;
+            line-height: 1.45;
+        }
+        .screen-desc code {
+            font-size: 13px;
+            background: #f0f0f0;
+            padding: 1px 6px;
+            border-radius: 3px;
+        }
+        .chart-slot-nav {
+            margin: 0 0 16px;
+            padding: 10px 12px;
+            background: #f8f9fa;
+            border-radius: 6px;
+            font-size: 14px;
+        }
+        .chart-slot-nav ul {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px 14px;
+        }
+        .chart-slot-nav a {
+            color: #1565c0;
+        }
+        .chart-slot {
+            scroll-margin-top: 12px;
+        }
+        .chart-slot-title {
+            font-size: 1.05rem;
+            font-weight: 600;
+            color: #444;
+            margin: 0 0 8px;
+        }
+        .chart-slot-desc {
+            margin-top: 0;
+        }
+        /* Graphics region: flex container; gap comes from meta (chartsHost.style.gap) */
+        .screen-charts {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: stretch;
+            align-content: flex-start;
+        }
+        .screen-charts.flow-stack {
+            flex-direction: column;
+        }
+        .screen-charts.flow-row {
+            flex-direction: row;
+        }
+        .screen-charts .chart-slot {
+            box-sizing: border-box;
+            display: flex;
+            flex-direction: column;
+            align-items: stretch;
+            min-width: 0;
+        }
+        .screen-charts.flow-stack .chart-slot {
+            width: 100%;
+            flex: 0 0 auto;
+        }
+        .screen-charts.flow-row .chart-slot.layout-span-full,
+        .screen-charts.flow-row .chart-slot.layout-break-before {
+            flex: 1 1 100%;
+            min-width: 100%;
+        }
+        /* Equal columns: flex-basis 0 + grow shares space; cross-axis gap is separate */
+        .screen-charts.flow-row .chart-slot.layout-span-half {
+            flex: 1 1 0;
+            min-width: 0;
+        }
+        .screen-charts.flow-row .chart-slot.layout-span-auto {
+            flex: 1 1 300px;
+            min-width: min(100%, 200px);
+        }
+        .screen-charts.flow-stack .chart-slot.layout-break-before-stack {
+            margin-top: 1.25rem;
+            padding-top: 1.25rem;
+            border-top: 1px solid #e0e0e0;
+        }
+        .period-filters {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 16px 24px;
+            margin-top: 16px;
+            padding-top: 16px;
+            border-top: 1px solid #eee;
+            font-size: 14px;
+        }
+        .period-filters label {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            font-weight: 600;
+            color: #444;
+        }
+        .period-filters select {
+            font-size: 14px;
+            padding: 6px 10px;
+            border-radius: 4px;
+            border: 1px solid #ccc;
+            min-width: 5rem;
+        }
+        .period-filters .period-hint {
+            font-weight: normal;
+            color: #666;
+            font-size: 13px;
+        }
+        .month-stepper {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .month-stepper label {
+            margin: 0;
+        }
+        .period-arrow {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 36px;
+            height: 36px;
+            padding: 0;
+            border: 1px solid #ccc;
+            border-radius: 6px;
+            background: #fff;
+            color: #1565c0;
+            font-size: 1.35rem;
+            line-height: 1;
+            cursor: pointer;
+            font-family: inherit;
+            flex-shrink: 0;
+        }
+        .period-arrow:hover {
+            background: #e3f2fd;
+            border-color: #90caf9;
+        }
+        .period-arrow:active {
+            background: #bbdefb;
+        }
+        .screen-tab-bar {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 4px;
+            margin-top: 16px;
+            padding: 4px;
+            background: #eceff1;
+            border-radius: 8px;
+        }
+        .screen-tab {
+            padding: 10px 16px;
+            border: none;
+            border-radius: 6px;
+            background: transparent;
+            color: #37474f;
+            font-size: 14px;
+            cursor: pointer;
+            font-family: inherit;
+        }
+        .screen-tab:hover {
+            background: rgba(255,255,255,0.7);
+        }
+        .screen-tab[aria-selected="true"] {
+            background: #fff;
+            color: #1565c0;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+            font-weight: 600;
+        }
+        .tab-panel[hidden] {
+            display: none !important;
+        }
+        .screen-inner {
+            display: flex;
+            flex-direction: column;
+            align-items: stretch;
+        }
+        .screen-inner .screen-desc {
+            margin-top: 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1 id="page-title">Loading…</h1>
+        <div id="page-intro"></div>
+        <div id="period-filters" class="period-filters" hidden>
+            <label id="label-wrap-year"><select id="filter-year"></select></label>
+            <div class="month-stepper" id="month-stepper" role="group">
+                <button type="button" id="filter-month-prev" class="period-arrow" title="" aria-label="">&#8249;</button>
+                <label id="label-wrap-month"><select id="filter-month"></select></label>
+                <button type="button" id="filter-month-next" class="period-arrow" title="" aria-label="">&#8250;</button>
+            </div>
+            <span class="period-hint" id="period-hint"></span>
+        </div>
+        <div id="screen-tab-bar" class="screen-tab-bar" role="tablist" aria-label="" hidden></div>
+    </div>
+
+    <div id="meta-error" class="container status error hidden" role="alert" aria-live="assertive"></div>
+
+    <div id="screens-root"></div>
+
+    <script>
+        var META_URL = 'meta.json';
+
+        /**
+         * UI strings: use ?lang=en or ?lang=fr (default: browser language, fallback en).
+         */
+        var UI_LOCALES = {
+            en: {
+                docTitle: 'MQTT Hive Data Visualization',
+                loading: 'Loading…',
+                dashboardsDefault: 'Dashboards',
+                year: 'Year',
+                month: 'Month',
+                periodHint:
+                    'Replaces <code>{{YEAR}}</code> and <code>{{MONTH}}</code> in data URLs, and any literal <code>year=</code> / <code>month=</code> numbers.',
+                prevMonth: 'Previous month',
+                nextMonth: 'Next month',
+                monthStepperAria: 'Month and step controls',
+                filterYearAria: 'Filter year',
+                filterMonthAria: 'Filter month',
+                tablistAria: 'Screens',
+                chartsInSectionAria: 'Charts in this section',
+                chartNumbered: 'Chart {n}',
+                loadingChartData: 'Loading chart data…',
+                retry: 'Retry',
+                chartSpecNotLoaded: 'Chart spec not loaded',
+                chartSpecNotLoadedDetail: 'Reload the page or retry loading meta.',
+                chartRenderFailed: 'Chart rendering failed',
+                dataRequestFailed: 'Data request failed (HTTP {status} {statusText})',
+                emptyResponseBody: '(empty response body)',
+                couldNotReachServer: 'Could not reach the server',
+                networkDetailSuffix:
+                    '\n\nCheck CORS, the URL, and that the analytic HTTP server is running.',
+                chartLoadingFailed: 'Chart loading failed',
+                missingSpecPath: 'Missing spec path',
+                missingSpecDetail: 'Add a "spec" property (Vega-Lite JSON file path).',
+                noScreensDefined: 'No screens defined in meta.json (<code>screens</code> array).',
+                addSpecOrCharts:
+                    'Add a <code>spec</code> path or a non-empty <code>charts</code> array.',
+                metaLoadFailed: 'Could not load {url} — HTTP {status} {statusText}',
+                metaNetworkFailed: 'Could not load {url}',
+                metaServeOverHttp:
+                    'Serve this folder over HTTP so meta.json and specs can be fetched (file:// often fails).',
+                invalidJsonInFile: 'Invalid JSON in {url}',
+                unknownError: 'Unknown error',
+                truncated: '… (truncated)',
+                emptyResponse: '(empty response)',
+                couldNotLoadChartJsonHttp: 'Could not load chart JSON — HTTP {status} {statusText}',
+                couldNotLoadChartJson: 'Could not load chart JSON',
+                checkPathPrefix: '\n\nCheck path: ',
+                invalidJsonSpecFile: 'Invalid JSON in spec file',
+                couldNotLoadChartSpecification: 'Could not load chart specification',
+                csvLarge: 'CSV response is large (~{kb} KB). Load Papa Parse or shorten the query.',
+                chartExportAria: 'Export chart data',
+                exportCsv: 'Download CSV',
+                exportExcel: 'Download Excel',
+                exportNoData: 'No tabular data loaded for this chart yet.',
+                exportXlsxUnavailable: 'Excel export needs the xlsx library (check network / CDN).',
+                months: [
+                    'January',
+                    'February',
+                    'March',
+                    'April',
+                    'May',
+                    'June',
+                    'July',
+                    'August',
+                    'September',
+                    'October',
+                    'November',
+                    'December'
+                ]
+            },
+            fr: {
+                docTitle: 'Visualisation MQTT Hive',
+                loading: 'Chargement…',
+                dashboardsDefault: 'Tableaux de bord',
+                year: 'Année',
+                month: 'Mois',
+                periodHint:
+                    'Remplace <code>{{YEAR}}</code> et <code>{{MONTH}}</code> dans les URL de données, ainsi que les valeurs littérales <code>year=</code> / <code>month=</code>.',
+                prevMonth: 'Mois précédent',
+                nextMonth: 'Mois suivant',
+                monthStepperAria: 'Contrôle du mois',
+                filterYearAria: 'Filtrer par année',
+                filterMonthAria: 'Filtrer par mois',
+                tablistAria: 'Écrans',
+                chartsInSectionAria: 'Graphiques dans cette section',
+                chartNumbered: 'Graphique {n}',
+                loadingChartData: 'Chargement des données du graphique…',
+                retry: 'Réessayer',
+                chartSpecNotLoaded: 'Spécification du graphique non chargée',
+                chartSpecNotLoadedDetail: 'Rechargez la page ou réessayez le chargement du meta.',
+                chartRenderFailed: 'Échec du rendu du graphique',
+                dataRequestFailed: 'Échec de la requête de données (HTTP {status} {statusText})',
+                emptyResponseBody: '(corps de réponse vide)',
+                couldNotReachServer: 'Impossible de joindre le serveur',
+                networkDetailSuffix:
+                    '\n\nVérifiez CORS, l’URL et que le serveur HTTP analytique est démarré.',
+                chartLoadingFailed: 'Échec du chargement du graphique',
+                missingSpecPath: 'Chemin de spécification manquant',
+                missingSpecDetail: 'Ajoutez une propriété « spec » (fichier JSON Vega-Lite).',
+                noScreensDefined: 'Aucun écran défini dans meta.json (tableau <code>screens</code>).',
+                addSpecOrCharts:
+                    'Ajoutez un chemin <code>spec</code> ou un tableau <code>charts</code> non vide.',
+                metaLoadFailed: 'Impossible de charger {url} — HTTP {status} {statusText}',
+                metaNetworkFailed: 'Impossible de charger {url}',
+                metaServeOverHttp:
+                    'Servez ce dossier en HTTP pour pouvoir charger meta.json et les specs (souvent impossible en file://).',
+                invalidJsonInFile: 'JSON invalide dans {url}',
+                unknownError: 'Erreur inconnue',
+                truncated: '… (tronqué)',
+                emptyResponse: '(réponse vide)',
+                couldNotLoadChartJsonHttp: 'Impossible de charger le JSON du graphique — HTTP {status} {statusText}',
+                couldNotLoadChartJson: 'Impossible de charger le JSON du graphique',
+                checkPathPrefix: '\n\nVérifiez le chemin : ',
+                invalidJsonSpecFile: 'JSON invalide dans le fichier de spec',
+                couldNotLoadChartSpecification: 'Impossible de charger la spécification du graphique',
+                csvLarge:
+                    'Réponse CSV volumineuse (~{kb} Ko). Chargez Papa Parse ou raccourcissez la requête.',
+                chartExportAria: 'Exporter les données du graphique',
+                exportCsv: 'Télécharger CSV',
+                exportExcel: 'Télécharger Excel',
+                exportNoData: 'Aucune donnée tabulaire chargée pour ce graphique.',
+                exportXlsxUnavailable: 'Export Excel impossible : bibliothèque xlsx indisponible (réseau / CDN).',
+                months: [
+                    'janvier',
+                    'février',
+                    'mars',
+                    'avril',
+                    'mai',
+                    'juin',
+                    'juillet',
+                    'août',
+                    'septembre',
+                    'octobre',
+                    'novembre',
+                    'décembre'
+                ]
+            }
+        };
+
+        function resolveUiLocale() {
+            try {
+                var q = new URLSearchParams(window.location.search).get('lang');
+                if (q) {
+                    q = String(q).slice(0, 5).toLowerCase();
+                    if (UI_LOCALES[q]) return q;
+                }
+            } catch (e) {}
+            try {
+                var nav = (navigator.language || navigator.userLanguage || 'en').slice(0, 2).toLowerCase();
+                if (UI_LOCALES[nav]) return nav;
+            } catch (e2) {}
+            return 'en';
+        }
+
+        var uiLocale = resolveUiLocale();
+
+        function t(key, vars) {
+            var bundle = UI_LOCALES[uiLocale] || UI_LOCALES.en;
+            var s = bundle[key];
+            if (s == null) s = UI_LOCALES.en[key];
+            if (s == null) s = key;
+            if (vars && typeof s === 'string') {
+                s = s.replace(/\{(\w+)\}/g, function (_, name) {
+                    return vars[name] != null ? String(vars[name]) : '';
+                });
+            }
+            return s;
+        }
+
+        function monthName(monthIndex1To12) {
+            var bundle = UI_LOCALES[uiLocale] || UI_LOCALES.en;
+            var months = bundle.months || UI_LOCALES.en.months;
+            var i = monthIndex1To12 - 1;
+            return months[i] != null ? months[i] : String(monthIndex1To12);
+        }
+
+        function applyChromeI18n() {
+            document.documentElement.lang = uiLocale;
+            var titleEl = document.querySelector('title');
+            if (titleEl) titleEl.textContent = t('docTitle');
+
+            var pageTitle = document.getElementById('page-title');
+            if (pageTitle) pageTitle.textContent = t('loading');
+
+            var ySel = document.getElementById('filter-year');
+            var yWrap = document.getElementById('label-wrap-year');
+            if (yWrap && ySel) {
+                yWrap.innerHTML = '';
+                yWrap.appendChild(document.createTextNode(t('year') + ' '));
+                yWrap.appendChild(ySel);
+                ySel.setAttribute('aria-label', t('filterYearAria'));
+            }
+
+            var mSel = document.getElementById('filter-month');
+            var mWrap = document.getElementById('label-wrap-month');
+            if (mWrap && mSel) {
+                mWrap.innerHTML = '';
+                mWrap.appendChild(document.createTextNode(t('month') + ' '));
+                mWrap.appendChild(mSel);
+                mSel.setAttribute('aria-label', t('filterMonthAria'));
+            }
+
+            var hint = document.getElementById('period-hint');
+            if (hint) hint.innerHTML = t('periodHint');
+
+            var prevBtn = document.getElementById('filter-month-prev');
+            var nextBtn = document.getElementById('filter-month-next');
+            if (prevBtn) {
+                prevBtn.title = t('prevMonth');
+                prevBtn.setAttribute('aria-label', t('prevMonth'));
+            }
+            if (nextBtn) {
+                nextBtn.title = t('nextMonth');
+                nextBtn.setAttribute('aria-label', t('nextMonth'));
+            }
+
+            var stepper = document.getElementById('month-stepper');
+            if (stepper) stepper.setAttribute('aria-label', t('monthStepperAria'));
+
+            var tabBar = document.getElementById('screen-tab-bar');
+            if (tabBar) tabBar.setAttribute('aria-label', t('tablistAria'));
+        }
+
+        /** Raw Vega-Lite JSON from file (before year/month URL patching). */
+        var rawSpecsByScreen = {};
+
+        /** Per chart slot: last patched spec used for embed/retry (key = chart instance id). */
+        var specsByScreen = {};
+
+        /** Flat list from renderScreens: { id, specPath } for refresh after period change. */
+        var dashboardPlans = [];
+
+        /** Per chart instance id: monotonic counter so stale async failures never repaint errors after a newer load succeeds. */
+        var chartLoadSeq = {};
+
+        /** Latest tabular rows per chart instance id (for CSV / XLSX export). */
+        var chartExportData = {};
+
+        function bumpChartLoadSeq(chartInstanceId) {
+            var n = (chartLoadSeq[chartInstanceId] || 0) + 1;
+            chartLoadSeq[chartInstanceId] = n;
+            return n;
+        }
+
+        function isCurrentChartLoadSeq(chartInstanceId, seq) {
+            return chartLoadSeq[chartInstanceId] === seq;
+        }
+
+        var filterYear = 2026;
+        var filterMonth = 4;
+
+        var usedChartInstanceIds = {};
+
+        function resetChartInstanceIds() {
+            usedChartInstanceIds = {};
+        }
+
+        function uniqueChartInstanceId(screenId, slotKey) {
+            var base = safeScreenId(slotKey);
+            if (!base) base = 'chart';
+            var id = screenId + '--' + base;
+            var n = 0;
+            while (usedChartInstanceIds[id]) {
+                n += 1;
+                id = screenId + '--' + base + '-' + n;
+            }
+            usedChartInstanceIds[id] = true;
+            return id;
+        }
+
+        /**
+         * Resolve charts for a screen: prefer non-empty `charts` array, else a lone `spec`.
+         * legacySingle: one implicit chart from `spec` keeps DOM ids compatible (`chart-{screenId}`).
+         */
+        function getScreenLayout(screen) {
+            var l = screen.layout;
+            if (!l) {
+                return { flow: 'stack', gap: '16px' };
+            }
+            if (typeof l === 'string') {
+                if (l === 'row' || l === 'sideBySide' || l === 'horizontal') {
+                    return { flow: 'row', gap: '16px' };
+                }
+                return { flow: 'stack', gap: '16px' };
+            }
+            var flow = l.flow || l.mode || 'stack';
+            if (flow === 'horizontal' || flow === 'sideBySide') {
+                flow = 'row';
+            }
+            if (flow !== 'row') {
+                flow = 'stack';
+            }
+            return { flow: flow, gap: l.gap != null ? String(l.gap) : '16px' };
+        }
+
+        function resolveChartLayout(def, screen) {
+            var raw = def.layout;
+            if (!raw && def.legacySingle && screen.layout && screen.layout.defaultChart) {
+                raw = screen.layout.defaultChart;
+            }
+            raw = raw || {};
+            var span = raw.span || raw.width || 'auto';
+            if (['full', 'half', 'auto'].indexOf(span) < 0) {
+                span = 'auto';
+            }
+            var breakBefore = !!(raw.breakBefore || raw.newLine || raw.lineBreak);
+            return { span: span, breakBefore: breakBefore };
+        }
+
+        function normalizeCharts(screen) {
+            var fromArray = screen.charts && Array.isArray(screen.charts) && screen.charts.length > 0;
+            if (fromArray) {
+                return screen.charts.map(function (c, i) {
+                    return {
+                        slotKey: c.id != null ? String(c.id) : 'chart-' + i,
+                        specPath: c.spec,
+                        title: c.title,
+                        description: c.description,
+                        descriptionHtml: c.descriptionHtml,
+                        layout: c.layout,
+                        legacySingle: false
+                    };
+                });
+            }
+            if (screen.spec) {
+                return [{
+                    slotKey: 'main',
+                    specPath: screen.spec,
+                    title: null,
+                    description: null,
+                    descriptionHtml: null,
+                    layout: screen.layout && screen.layout.defaultChart ? screen.layout.defaultChart : null,
+                    legacySingle: true
+                }];
+            }
+            return [];
+        }
+
+        function chartInstanceIdFor(screenId, def, defs) {
+            if (defs.length === 1 && def.legacySingle) {
+                return screenId;
+            }
+            return uniqueChartInstanceId(screenId, def.slotKey);
+        }
+
+        function escapeHtml(text) {
+            var d = document.createElement('div');
+            d.textContent = text == null ? '' : String(text);
+            return d.innerHTML;
+        }
+
+        function safeScreenId(raw) {
+            var s = String(raw || '').replace(/[^a-zA-Z0-9_-]/g, '');
+            if (!s) s = 'screen-' + Math.random().toString(36).slice(2, 10);
+            return s;
+        }
+
+        var usedScreenIds = {};
+
+        function uniqueScreenId(raw) {
+            var base = safeScreenId(raw);
+            var id = base;
+            var n = 0;
+            while (usedScreenIds[id]) {
+                n += 1;
+                id = base + '-' + n;
+            }
+            usedScreenIds[id] = true;
+            return id;
+        }
+
+        function resolveSpecUrl(specPath) {
+            try {
+                return new URL(specPath, window.location.href).href;
+            } catch (e) {
+                return specPath;
+            }
+        }
+
+        /**
+         * Apply period filters to a Vega data URL.
+         * Placeholders (optional, recommended in spec JSON): {{YEAR}} and {{MONTH}} are replaced with the filter values.
+         * Backward compatible: also rewrites literal year=NNNN and month=N in the path.
+         */
+        function applyYearMonthToSqlUrl(url, y, m) {
+            if (!url || typeof url !== 'string') return url;
+            var hasPh = url.indexOf('{{YEAR}}') >= 0 || url.indexOf('{{MONTH}}') >= 0;
+            var hasLit = /\byear=\d+/.test(url) || /\bmonth=\d+/.test(url);
+            if (!hasPh && !hasLit) return url;
+            var out = url;
+            out = out.replace(/\{\{YEAR\}\}/g, String(y));
+            out = out.replace(/\{\{MONTH\}\}/g, String(m));
+            if (hasLit) {
+                out = out.replace(/\byear=\d+/g, 'year=' + y);
+                out = out.replace(/\bmonth=\d+/g, 'month=' + m);
+            }
+            return out;
+        }
+
+        function patchYearMonthInSpec(spec, y, m) {
+            var clone = JSON.parse(JSON.stringify(spec));
+            function walk(o) {
+                if (!o || typeof o !== 'object') return;
+                if (Array.isArray(o)) {
+                    o.forEach(walk);
+                    return;
+                }
+                for (var key in o) {
+                    if (!Object.prototype.hasOwnProperty.call(o, key)) continue;
+                    if (key === 'url' && typeof o[key] === 'string') {
+                        o[key] = applyYearMonthToSqlUrl(o[key], y, m);
+                    } else {
+                        walk(o[key]);
+                    }
+                }
+            }
+            walk(clone);
+            return clone;
+        }
+
+        function readPeriodFromQuery() {
+            try {
+                var q = new URLSearchParams(window.location.search);
+                var y = parseInt(q.get('year'), 10);
+                var mo = parseInt(q.get('month'), 10);
+                return {
+                    year: !isNaN(y) && y >= 1990 && y <= 2100 ? y : null,
+                    month: !isNaN(mo) && mo >= 1 && mo <= 12 ? mo : null
+                };
+            } catch (e) {
+                return { year: null, month: null };
+            }
+        }
+
+        function writePeriodToQuery() {
+            try {
+                var url = new URL(window.location.href);
+                url.searchParams.set('year', String(filterYear));
+                url.searchParams.set('month', String(filterMonth));
+                window.history.replaceState({}, '', url.toString());
+            } catch (e) {}
+        }
+
+        function initPeriodFilters(meta) {
+            var ySel = document.getElementById('filter-year');
+            var mSel = document.getElementById('filter-month');
+            if (!ySel || !mSel) return;
+
+            var cy = new Date().getFullYear();
+            ySel.innerHTML = '';
+            var yStart = cy - 12;
+            var yEnd = cy + 3;
+            for (var yy = yStart; yy <= yEnd; yy++) {
+                var opt = document.createElement('option');
+                opt.value = String(yy);
+                opt.textContent = String(yy);
+                ySel.appendChild(opt);
+            }
+
+            mSel.innerHTML = '';
+            for (var mi = 1; mi <= 12; mi++) {
+                var mo = document.createElement('option');
+                mo.value = String(mi);
+                mo.textContent = monthName(mi);
+                mSel.appendChild(mo);
+            }
+
+            var def = (meta && meta.defaults) || {};
+            var q = readPeriodFromQuery();
+            filterYear = q.year != null ? q.year : def.year != null ? parseInt(def.year, 10) : filterYear;
+            filterMonth = q.month != null ? q.month : def.month != null ? parseInt(def.month, 10) : filterMonth;
+            if (isNaN(filterYear)) filterYear = cy;
+            if (isNaN(filterMonth) || filterMonth < 1 || filterMonth > 12) filterMonth = 4;
+
+            var hasYearOpt = false;
+            for (var i = 0; i < ySel.options.length; i++) {
+                if (ySel.options[i].value === String(filterYear)) hasYearOpt = true;
+            }
+            if (!hasYearOpt) {
+                var ox = document.createElement('option');
+                ox.value = String(filterYear);
+                ox.textContent = String(filterYear);
+                ySel.insertBefore(ox, ySel.firstChild);
+            }
+            ySel.value = String(filterYear);
+            mSel.value = String(filterMonth);
+
+            function ensureYearInDropdown(y) {
+                var sy = String(y);
+                var exists = false;
+                for (var i = 0; i < ySel.options.length; i++) {
+                    if (ySel.options[i].value === sy) {
+                        exists = true;
+                        break;
+                    }
+                }
+                if (!exists) {
+                    var ox = document.createElement('option');
+                    ox.value = sy;
+                    ox.textContent = sy;
+                    ySel.appendChild(ox);
+                }
+                ySel.value = sy;
+            }
+
+            function applyPeriodFromControls() {
+                filterYear = parseInt(ySel.value, 10);
+                filterMonth = parseInt(mSel.value, 10);
+                writePeriodToQuery();
+                refreshChartsForPeriod();
+            }
+
+            function stepMonth(delta) {
+                var y = parseInt(ySel.value, 10);
+                var mo = parseInt(mSel.value, 10);
+                if (isNaN(y) || isNaN(mo)) return;
+                mo += delta;
+                while (mo < 1) {
+                    mo += 12;
+                    y -= 1;
+                }
+                while (mo > 12) {
+                    mo -= 12;
+                    y += 1;
+                }
+                ensureYearInDropdown(y);
+                mSel.value = String(mo);
+                filterYear = y;
+                filterMonth = mo;
+                writePeriodToQuery();
+                refreshChartsForPeriod();
+            }
+
+            ySel.onchange = applyPeriodFromControls;
+            mSel.onchange = applyPeriodFromControls;
+
+            var prevBtn = document.getElementById('filter-month-prev');
+            var nextBtn = document.getElementById('filter-month-next');
+            if (prevBtn) prevBtn.onclick = function () { stepMonth(-1); };
+            if (nextBtn) nextBtn.onclick = function () { stepMonth(1); };
+        }
+
+        function refreshChartsForPeriod() {
+            if (!dashboardPlans || !dashboardPlans.length) return;
+            dashboardPlans.forEach(function (p) {
+                if (rawSpecsByScreen[p.id]) {
+                    loadChartFor(p.id);
+                }
+            });
+        }
+
+        /** Fetch Vega specs + chart data only for charts on the given screen tab (lazy load). */
+        function loadChartsForScreen(screenId) {
+            if (!screenId || !dashboardPlans.length) return;
+            dashboardPlans.forEach(function (p) {
+                if (p.screenId !== screenId) return;
+                if (!p.specPath) {
+                    showChartError(p.id, t('missingSpecPath'), t('missingSpecDetail'));
+                    return;
+                }
+                if (rawSpecsByScreen[p.id]) return;
+                loadScreenSpec(p.id, p.specPath);
+            });
+        }
+
+        function applyTabSelection(screenId, focusTab) {
+            document.querySelectorAll('#screen-tab-bar .screen-tab').forEach(function (t) {
+                var sel = t.getAttribute('data-screen-id') === screenId;
+                t.setAttribute('aria-selected', sel ? 'true' : 'false');
+                t.tabIndex = sel ? 0 : -1;
+            });
+            document.querySelectorAll('#screens-root .tab-panel').forEach(function (p) {
+                var sel = p.getAttribute('data-screen-id') === screenId;
+                p.hidden = !sel;
+            });
+            if (focusTab) {
+                var tb = document.querySelector('#screen-tab-bar .screen-tab[data-screen-id="' + screenId + '"]');
+                if (tb) tb.focus();
+            }
+        }
+
+        function selectTabByScreenId(screenId, opts) {
+            opts = opts || {};
+            if (!document.getElementById('tabpanel-' + screenId)) return;
+            applyTabSelection(screenId, !!opts.focus);
+            if (opts.updateHash !== false) {
+                try {
+                    var u = new URL(window.location.href);
+                    u.hash = screenId;
+                    history.replaceState(null, '', u.toString());
+                } catch (e) {
+                    window.location.hash = screenId;
+                }
+            }
+            loadChartsForScreen(screenId);
+        }
+
+        function setDataLoading(screenId, loading) {
+            var el = document.getElementById('data-loader-' + screenId);
+            if (el) el.classList.toggle('hidden', !loading);
+        }
+
+        function clearChartError(screenId) {
+            var el = document.getElementById('chart-error-' + screenId);
+            if (!el) return;
+            el.classList.add('hidden');
+            el.innerHTML = '';
+        }
+
+        function showChartError(screenId, title, detail, options) {
+            options = options || {};
+            var el = document.getElementById('chart-error-' + screenId);
+            if (!el) return;
+            el.classList.remove('hidden');
+            el.innerHTML = '';
+            var strong = document.createElement('strong');
+            strong.textContent = title;
+            el.appendChild(strong);
+            if (detail !== undefined && detail !== '') {
+                var pre = document.createElement('pre');
+                pre.textContent = typeof detail === 'string' ? detail : String(detail);
+                el.appendChild(pre);
+            }
+            if (options.showRetry) {
+                var btn = document.createElement('button');
+                btn.type = 'button';
+                btn.className = 'chart-error-retry';
+                btn.textContent = t('retry');
+                var retryFn = typeof options.onRetry === 'function' ? options.onRetry : function () {
+                    loadChartFor(screenId);
+                };
+                btn.addEventListener('click', function () {
+                    retryFn();
+                });
+                el.appendChild(btn);
+            }
+        }
+
+        function showFetchError(screenId, title, detail, onRetry) {
+            var opts = { showRetry: true };
+            if (typeof onRetry === 'function') opts.onRetry = onRetry;
+            showChartError(screenId, title, detail, opts);
+        }
+
+        function showMetaError(title, detail, onRetry) {
+            var wrap = document.getElementById('meta-error');
+            wrap.classList.remove('hidden');
+            wrap.innerHTML = '';
+            var strong = document.createElement('strong');
+            strong.textContent = title;
+            wrap.appendChild(strong);
+            if (detail) {
+                var pre = document.createElement('pre');
+                pre.textContent = typeof detail === 'string' ? detail : String(detail);
+                wrap.appendChild(pre);
+            }
+            if (typeof onRetry === 'function') {
+                var btn = document.createElement('button');
+                btn.type = 'button';
+                btn.style.marginTop = '12px';
+                btn.textContent = t('retry');
+                btn.addEventListener('click', onRetry);
+                wrap.appendChild(btn);
+            }
+        }
+
+        function hideMetaError() {
+            var wrap = document.getElementById('meta-error');
+            wrap.classList.add('hidden');
+            wrap.innerHTML = '';
+        }
+
+        function formatEmbedError(err) {
+            if (!err) return t('unknownError');
+            var msg = typeof err.message === 'string' && err.message ? err.message : String(err);
+            var parts = [msg];
+            if (err.stack && typeof err.stack === 'string') parts.push(err.stack);
+            return parts.join('\n\n');
+        }
+
+        var MAX_CSV_DATA_URI_CHARS = 524288;
+
+        function csvTextToEmbedSpec(csvText, baseSpec) {
+            var embedSpec = JSON.parse(JSON.stringify(baseSpec));
+            if (csvText.length <= MAX_CSV_DATA_URI_CHARS) {
+                embedSpec.data = {
+                    url: 'data:text/csv;charset=utf-8,' + encodeURIComponent(csvText),
+                    format: { type: 'csv' }
+                };
+                return embedSpec;
+            }
+            if (typeof Papa === 'undefined') {
+                throw new Error(t('csvLarge', { kb: String(Math.round(csvText.length / 1024)) }));
+            }
+            var parsed = Papa.parse(csvText, {
+                delimiter: ',',
+                header: true,
+                skipEmptyLines: 'greedy',
+                dynamicTyping: true
+            });
+            if (parsed.errors && parsed.errors.length) {
+                var bad = parsed.errors.filter(function (e) {
+                    if (e.type === 'Delimiter' && e.code === 'UndetectableDelimiter') return false;
+                    return e.type === 'Quotes' || e.type === 'Delimiter';
+                });
+                if (bad.length) {
+                    throw new Error(bad.map(function (e) { return e.message + ' (row ' + e.row + ')'; }).join('\n'));
+                }
+            }
+            embedSpec.data = { values: parsed.data };
+            return embedSpec;
+        }
+
+        function parseCsvRowsForExport(csvText) {
+            if (!csvText || typeof csvText !== 'string' || typeof Papa === 'undefined') return [];
+            var parsed = Papa.parse(csvText, {
+                delimiter: ',',
+                header: true,
+                skipEmptyLines: 'greedy',
+                dynamicTyping: true
+            });
+            if (parsed.errors && parsed.errors.length) {
+                var bad = parsed.errors.filter(function (e) {
+                    if (e.type === 'Delimiter' && e.code === 'UndetectableDelimiter') return false;
+                    return e.type === 'Quotes' || e.type === 'Delimiter';
+                });
+                if (bad.length) return [];
+            }
+            return Array.isArray(parsed.data) ? parsed.data : [];
+        }
+
+        function updateChartExportToolbarState(cid, enabled) {
+            var wrap = document.getElementById('chart-wrap-' + cid);
+            if (!wrap) return;
+            var tb = wrap.querySelector('.chart-export-toolbar');
+            if (!tb) return;
+            tb.querySelectorAll('.chart-export-btn').forEach(function (b) {
+                b.disabled = !enabled;
+            });
+        }
+
+        function setChartExportRows(cid, rows) {
+            if (!cid) return;
+            if (rows && Array.isArray(rows) && rows.length) {
+                chartExportData[cid] = rows;
+                updateChartExportToolbarState(cid, true);
+            } else {
+                delete chartExportData[cid];
+                updateChartExportToolbarState(cid, false);
+            }
+        }
+
+        function clearChartExportRows(cid) {
+            delete chartExportData[cid];
+            updateChartExportToolbarState(cid, false);
+        }
+
+        function sanitizeExportBasename(cid) {
+            var s = String(cid || 'chart').replace(/[^\w\-]+/g, '_');
+            return s.length > 96 ? s.slice(0, 96) : s;
+        }
+
+        function objectsToCsvString(rows) {
+            if (!rows || !rows.length) return '';
+            var keys = Object.keys(rows[0]);
+            var lines = [keys.join(',')];
+            rows.forEach(function (r) {
+                lines.push(
+                    keys
+                        .map(function (k) {
+                            var v = r[k];
+                            if (v == null) return '';
+                            var s = typeof v === 'object' ? JSON.stringify(v) : String(v);
+                            if (/[",\n\r]/.test(s)) return '"' + s.replace(/"/g, '""') + '"';
+                            return s;
+                        })
+                        .join(',')
+                );
+            });
+            return lines.join('\r\n');
+        }
+
+        function triggerTextFileDownload(filename, mime, text) {
+            var blob = new Blob([text], { type: mime });
+            var a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            URL.revokeObjectURL(a.href);
+        }
+
+        function downloadChartExportCsv(cid) {
+            var rows = chartExportData[cid];
+            if (!rows || !rows.length) {
+                window.alert(t('exportNoData'));
+                return;
+            }
+            var csv = objectsToCsvString(rows);
+            triggerTextFileDownload(sanitizeExportBasename(cid) + '.csv', 'text/csv;charset=utf-8', '\ufeff' + csv);
+        }
+
+        function downloadChartExportXlsx(cid) {
+            var rows = chartExportData[cid];
+            if (!rows || !rows.length) {
+                window.alert(t('exportNoData'));
+                return;
+            }
+            if (typeof XLSX === 'undefined' || !XLSX.utils || !XLSX.utils.json_to_sheet) {
+                window.alert(t('exportXlsxUnavailable'));
+                return;
+            }
+            try {
+                var ws = XLSX.utils.json_to_sheet(rows);
+                var wb = XLSX.utils.book_new();
+                XLSX.utils.book_append_sheet(wb, ws, 'Data');
+                XLSX.writeFile(wb, sanitizeExportBasename(cid) + '.xlsx');
+            } catch (e) {
+                console.error(e);
+                window.alert(t('exportXlsxUnavailable'));
+            }
+        }
+
+        function appendChartExportToolbar(wrap, cid) {
+            wrap.id = 'chart-wrap-' + cid;
+            var tb = document.createElement('div');
+            tb.className = 'chart-export-toolbar';
+            tb.setAttribute('data-chart-cid', cid);
+            tb.setAttribute('aria-label', t('chartExportAria'));
+            var iconCsv =
+                '<svg xmlns="http://www.w3.org/2000/svg" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M8 13h8"/><path d="M8 17h8"/><path d="M8 9h2"/></svg>';
+            var iconXlsx =
+                '<svg xmlns="http://www.w3.org/2000/svg" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M8 12h8"/><path d="M8 16h5"/><rect x="8" y="8" width="8" height="3" rx="0.5"/></svg>';
+            [['csv', iconCsv, t('exportCsv')], ['xlsx', iconXlsx, t('exportExcel')]].forEach(function (spec) {
+                var b = document.createElement('button');
+                b.type = 'button';
+                b.className = 'chart-export-btn';
+                b.setAttribute('data-format', spec[0]);
+                b.setAttribute('title', spec[2]);
+                b.setAttribute('aria-label', spec[2]);
+                b.disabled = true;
+                b.innerHTML = spec[1];
+                tb.appendChild(b);
+            });
+            wrap.appendChild(tb);
+        }
+
+        function initChartExportDelegation() {
+            var root = document.getElementById('screens-root');
+            if (!root || root.dataset.chartExportInit) return;
+            root.dataset.chartExportInit = '1';
+            root.addEventListener('click', function (ev) {
+                var btn = ev.target.closest('.chart-export-btn');
+                if (!btn || !root.contains(btn)) return;
+                ev.preventDefault();
+                var tb = btn.closest('.chart-export-toolbar');
+                var cid = tb && tb.getAttribute('data-chart-cid');
+                if (!cid) return;
+                var fmt = btn.getAttribute('data-format');
+                if (fmt === 'csv') downloadChartExportCsv(cid);
+                else if (fmt === 'xlsx') downloadChartExportXlsx(cid);
+            });
+        }
+
+        function loadChartFor(screenId) {
+            var seq = bumpChartLoadSeq(screenId);
+            var raw = rawSpecsByScreen[screenId];
+            if (!raw) {
+                setDataLoading(screenId, false);
+                clearChartExportRows(screenId);
+                if (isCurrentChartLoadSeq(screenId, seq)) {
+                    showChartError(screenId, t('chartSpecNotLoaded'), t('chartSpecNotLoadedDetail'));
+                }
+                return;
+            }
+
+            var vegaSpecs = patchYearMonthInSpec(raw, filterYear, filterMonth);
+            specsByScreen[screenId] = vegaSpecs;
+
+            clearChartError(screenId);
+            setDataLoading(screenId, true);
+            clearChartExportRows(screenId);
+
+            var chartSel = '#chart-' + screenId;
+            var data = vegaSpecs && vegaSpecs.data;
+            var dataUrl = data && typeof data.url === 'string' ? data.url : null;
+            var embedOpts = {};
+
+            function finishVegaError(err) {
+                if (!isCurrentChartLoadSeq(screenId, seq)) return;
+                setDataLoading(screenId, false);
+                clearChartExportRows(screenId);
+                console.error(err);
+                showChartError(screenId, t('chartRenderFailed'), formatEmbedError(err));
+            }
+
+            if (!dataUrl) {
+                var v0 = vegaSpecs.data && Array.isArray(vegaSpecs.data.values) ? vegaSpecs.data.values : [];
+                setChartExportRows(screenId, v0);
+                vegaEmbed(chartSel, vegaSpecs, embedOpts)
+                    .then(function () {
+                        if (!isCurrentChartLoadSeq(screenId, seq)) return;
+                        clearChartError(screenId);
+                        setDataLoading(screenId, false);
+                    })
+                    .catch(finishVegaError);
+                return;
+            }
+
+            fetch(dataUrl, {
+                method: 'GET',
+                credentials: 'omit',
+                headers: {
+                    Accept: 'text/csv, text/plain; charset=utf-8;q=0.9, */*;q=0.1'
+                }
+            })
+                .then(function (response) {
+                    if (!response.ok) {
+                        return response.text().then(function (body) {
+                            var snippet = body.length > 4000 ? body.slice(0, 4000) + '\n' + t('truncated') : body;
+                            var err = new Error('HTTP ' + response.status + ' ' + (response.statusText || ''));
+                            err.fetchError = true;
+                            err.status = response.status;
+                            err.statusText = response.statusText || '';
+                            err.body = snippet;
+                            throw err;
+                        });
+                    }
+                    return response.text();
+                })
+                .then(function (csvText) {
+                    if (!isCurrentChartLoadSeq(screenId, seq)) return Promise.resolve();
+                    var rows = parseCsvRowsForExport(csvText);
+                    setChartExportRows(screenId, rows);
+                    var embedSpec;
+                    try {
+                        embedSpec = csvTextToEmbedSpec(csvText, vegaSpecs);
+                    } catch (e) {
+                        clearChartExportRows(screenId);
+                        throw e;
+                    }
+                    return vegaEmbed(chartSel, embedSpec, embedOpts);
+                })
+                .then(function () {
+                    if (!isCurrentChartLoadSeq(screenId, seq)) return;
+                    clearChartError(screenId);
+                    setDataLoading(screenId, false);
+                })
+                .catch(function (err) {
+                    if (!isCurrentChartLoadSeq(screenId, seq)) return;
+                    setDataLoading(screenId, false);
+                    clearChartExportRows(screenId);
+                    console.error(err);
+                    if (err && err.fetchError) {
+                        showFetchError(
+                            screenId,
+                            t('dataRequestFailed', {
+                                status: String(err.status),
+                                statusText: String(err.statusText || '')
+                            }),
+                            err.body || t('emptyResponseBody'),
+                            function () {
+                                loadChartFor(screenId);
+                            }
+                        );
+                        return;
+                    }
+                    if (err && err.name === 'TypeError' && /fetch|Failed to fetch|NetworkError/i.test(String(err.message))) {
+                        showFetchError(
+                            screenId,
+                            t('couldNotReachServer'),
+                            err.message + t('networkDetailSuffix'),
+                            function () {
+                                loadChartFor(screenId);
+                            }
+                        );
+                        return;
+                    }
+                    showChartError(screenId, t('chartLoadingFailed'), formatEmbedError(err));
+                });
+        }
+
+        function fetchVegaSpec(specPath) {
+            var url = resolveSpecUrl(specPath);
+            return fetch(url, { method: 'GET', credentials: 'omit' }).then(function (response) {
+                if (!response.ok) {
+                    return response.text().then(function (body) {
+                        var snippet = body.length > 2000 ? body.slice(0, 2000) + '\n' + t('truncated') : body;
+                        var err = new Error('HTTP ' + response.status);
+                        err.specLoad = true;
+                        err.status = response.status;
+                        err.statusText = response.statusText || '';
+                        err.body = snippet;
+                        throw err;
+                    });
+                }
+                return response.json();
+            });
+        }
+
+        function loadScreenSpec(screenId, specPath) {
+            clearChartError(screenId);
+            setDataLoading(screenId, true);
+            fetchVegaSpec(specPath)
+                .then(function (spec) {
+                    rawSpecsByScreen[screenId] = spec;
+                    loadChartFor(screenId);
+                })
+                .catch(function (err) {
+                    setDataLoading(screenId, false);
+                    console.error(err);
+                    if (err && err.specLoad) {
+                        showFetchError(
+                            screenId,
+                            t('couldNotLoadChartJsonHttp', {
+                                status: String(err.status),
+                                statusText: String(err.statusText || '')
+                            }),
+                            err.body || t('emptyResponse'),
+                            function () {
+                                loadScreenSpec(screenId, specPath);
+                            }
+                        );
+                        return;
+                    }
+                    if (err && err.name === 'TypeError' && /fetch|Failed to fetch|NetworkError/i.test(String(err.message))) {
+                        showFetchError(
+                            screenId,
+                            t('couldNotLoadChartJson'),
+                            err.message + t('checkPathPrefix') + specPath,
+                            function () {
+                                loadScreenSpec(screenId, specPath);
+                            }
+                        );
+                        return;
+                    }
+                    if (err instanceof SyntaxError) {
+                        showFetchError(screenId, t('invalidJsonSpecFile'), err.message, function () {
+                            loadScreenSpec(screenId, specPath);
+                        });
+                        return;
+                    }
+                    showFetchError(screenId, t('couldNotLoadChartSpecification'), formatEmbedError(err), function () {
+                        loadScreenSpec(screenId, specPath);
+                    });
+                });
+        }
+
+        function renderScreens(meta) {
+            usedScreenIds = {};
+            resetChartInstanceIds();
+            chartExportData = {};
+            document.title = meta.pageTitle || t('docTitle');
+            document.getElementById('page-title').textContent = meta.pageTitle || t('dashboardsDefault');
+            var intro = document.getElementById('page-intro');
+            if (meta.introHtml) {
+                intro.innerHTML = meta.introHtml;
+            } else {
+                intro.innerHTML = '';
+            }
+
+            var tabBar = document.getElementById('screen-tab-bar');
+            tabBar.innerHTML = '';
+            var root = document.getElementById('screens-root');
+            root.innerHTML = '';
+
+            var screens = meta.screens;
+            if (!screens || !screens.length) {
+                root.innerHTML =
+                    '<div class="container"><p>' + t('noScreensDefined') + '</p></div>';
+                tabBar.hidden = true;
+                document.getElementById('period-filters').hidden = true;
+                return { plans: [], firstScreenId: null };
+            }
+
+            var plans = [];
+            var firstScreenId = null;
+
+            screens.forEach(function (screen) {
+                var screenId = uniqueScreenId(screen.id);
+                var title = screen.title || screenId;
+
+                var tabBtn = document.createElement('button');
+                tabBtn.type = 'button';
+                tabBtn.className = 'screen-tab';
+                tabBtn.setAttribute('role', 'tab');
+                tabBtn.id = 'tab-' + screenId;
+                tabBtn.setAttribute('data-screen-id', screenId);
+                tabBtn.setAttribute('aria-controls', 'tabpanel-' + screenId);
+                tabBtn.setAttribute('aria-selected', 'false');
+                tabBtn.tabIndex = -1;
+                tabBtn.textContent = title;
+                tabBtn.addEventListener('click', function () {
+                    selectTabByScreenId(screenId);
+                });
+                tabBar.appendChild(tabBtn);
+
+                var panel = document.createElement('div');
+                panel.className = 'tab-panel container';
+                panel.id = 'tabpanel-' + screenId;
+                panel.setAttribute('data-screen-id', screenId);
+                panel.setAttribute('role', 'tabpanel');
+                panel.setAttribute('aria-labelledby', 'tab-' + screenId);
+                panel.hidden = true;
+
+                var inner = document.createElement('div');
+                inner.className = 'screen-inner';
+
+                if (screen.description) {
+                    var pDesc = document.createElement('p');
+                    pDesc.className = 'screen-desc';
+                    pDesc.innerHTML = screen.descriptionHtml ? screen.descriptionHtml : escapeHtml(screen.description);
+                    inner.appendChild(pDesc);
+                }
+
+                var defs = normalizeCharts(screen);
+                if (!defs.length) {
+                    var miss = document.createElement('p');
+                    miss.className = 'screen-desc';
+                    miss.innerHTML = t('addSpecOrCharts');
+                    inner.appendChild(miss);
+                    panel.appendChild(inner);
+                    root.appendChild(panel);
+                    if (!firstScreenId) firstScreenId = screenId;
+                    return;
+                }
+
+                var chartIds = defs.map(function (def) {
+                    return chartInstanceIdFor(screenId, def, defs);
+                });
+
+                var screenLayout = getScreenLayout(screen);
+                var chartsHost = document.createElement('div');
+                chartsHost.className = 'screen-charts flow-' + screenLayout.flow;
+                chartsHost.style.gap = screenLayout.gap;
+
+                if (defs.length > 1) {
+                    var slotNav = document.createElement('nav');
+                    slotNav.className = 'chart-slot-nav';
+                    slotNav.setAttribute('aria-label', t('chartsInSectionAria'));
+                    var subUl = document.createElement('ul');
+                    defs.forEach(function (def, idx) {
+                        var cid = chartIds[idx];
+                        var sli = document.createElement('li');
+                        var sa = document.createElement('a');
+                        sa.href = '#' + cid;
+                        sa.textContent = def.title || t('chartNumbered', { n: String(idx + 1) });
+                        sli.appendChild(sa);
+                        subUl.appendChild(sli);
+                    });
+                    slotNav.appendChild(subUl);
+                    inner.appendChild(slotNav);
+                }
+
+                defs.forEach(function (def, idx) {
+                    var cid = chartIds[idx];
+                    plans.push({ id: cid, specPath: def.specPath, screenId: screenId });
+
+                    var slot = document.createElement('div');
+                    slot.className = 'chart-slot';
+                    slot.id = cid;
+
+                    var cl = resolveChartLayout(def, screen);
+                    if (screenLayout.flow === 'row') {
+                        if (cl.breakBefore) {
+                            slot.classList.add('layout-break-before');
+                        }
+                        slot.classList.add('layout-span-' + cl.span);
+                    } else {
+                        if (cl.breakBefore) {
+                            slot.classList.add('layout-break-before-stack');
+                        }
+                    }
+
+                    if (def.title) {
+                        var h3 = document.createElement('h3');
+                        h3.className = 'chart-slot-title';
+                        h3.textContent = def.title;
+                        slot.appendChild(h3);
+                    }
+                    if (def.description || def.descriptionHtml) {
+                        var dp = document.createElement('p');
+                        dp.className = 'screen-desc chart-slot-desc';
+                        dp.innerHTML = def.descriptionHtml ? def.descriptionHtml : escapeHtml(def.description || '');
+                        slot.appendChild(dp);
+                    }
+
+                    var wrap = document.createElement('div');
+                    wrap.className = 'chart-wrap';
+
+                    var errEl = document.createElement('div');
+                    errEl.id = 'chart-error-' + cid;
+                    errEl.className = 'chart-error status error hidden';
+                    errEl.setAttribute('role', 'alert');
+                    errEl.setAttribute('aria-live', 'assertive');
+                    wrap.appendChild(errEl);
+
+                    appendChartExportToolbar(wrap, cid);
+
+                    var loader = document.createElement('div');
+                    loader.id = 'data-loader-' + cid;
+                    loader.className = 'loader-overlay';
+                    loader.setAttribute('role', 'status');
+                    loader.innerHTML =
+                        '<div class="spinner" aria-hidden="true"></div><span>' +
+                        escapeHtml(t('loadingChartData')) +
+                        '</span>';
+                    wrap.appendChild(loader);
+
+                    var chartEl = document.createElement('div');
+                    chartEl.id = 'chart-' + cid;
+                    chartEl.className = 'chart-vega-host';
+                    wrap.appendChild(chartEl);
+
+                    slot.appendChild(wrap);
+                    chartsHost.appendChild(slot);
+                });
+
+                inner.appendChild(chartsHost);
+                panel.appendChild(inner);
+                root.appendChild(panel);
+
+                if (!firstScreenId) firstScreenId = screenId;
+            });
+
+            tabBar.hidden = false;
+            if (firstScreenId) {
+                var hashId = (window.location.hash || '').replace(/^#/, '');
+                if (hashId && document.getElementById('tabpanel-' + hashId)) {
+                    applyTabSelection(hashId, false);
+                } else {
+                    applyTabSelection(firstScreenId, false);
+                }
+            }
+
+            return { plans: plans, firstScreenId: firstScreenId };
+        }
+
+        function bootstrap() {
+            applyChromeI18n();
+            hideMetaError();
+            specsByScreen = {};
+            rawSpecsByScreen = {};
+            dashboardPlans = [];
+            chartLoadSeq = {};
+            document.getElementById('page-title').textContent = t('loading');
+            document.getElementById('screen-tab-bar').innerHTML = '';
+            document.getElementById('screen-tab-bar').hidden = true;
+            document.getElementById('period-filters').hidden = true;
+            document.getElementById('screens-root').innerHTML = '';
+            document.getElementById('page-intro').innerHTML = '';
+
+            fetch(META_URL, { method: 'GET', credentials: 'omit' })
+                .then(function (response) {
+                    if (!response.ok) {
+                        return response.text().then(function (body) {
+                            var snippet = body.length > 2000 ? body.slice(0, 2000) + '\n' + t('truncated') : body;
+                            var err = new Error('HTTP ' + response.status);
+                            err.metaLoad = true;
+                            err.status = response.status;
+                            err.statusText = response.statusText || '';
+                            err.body = snippet;
+                            throw err;
+                        });
+                    }
+                    return response.json();
+                })
+                .then(function (meta) {
+                    var result = renderScreens(meta);
+                    initChartExportDelegation();
+                    dashboardPlans = result.plans || [];
+                    initPeriodFilters(meta);
+                    if (result.firstScreenId) {
+                        document.getElementById('period-filters').hidden = false;
+                    }
+                    var activeScreenId = (window.location.hash || '').replace(/^#/, '');
+                    if (!activeScreenId || !document.getElementById('tabpanel-' + activeScreenId)) {
+                        activeScreenId = result.firstScreenId;
+                    }
+                    if (activeScreenId) {
+                        loadChartsForScreen(activeScreenId);
+                    }
+                    writePeriodToQuery();
+                })
+                .catch(function (err) {
+                    console.error(err);
+                    if (err && err.metaLoad) {
+                        showMetaError(
+                            t('metaLoadFailed', {
+                                url: META_URL,
+                                status: String(err.status),
+                                statusText: String(err.statusText || '')
+                            }),
+                            err.body || t('emptyResponse'),
+                            bootstrap
+                        );
+                        return;
+                    }
+                    if (err && err.name === 'TypeError' && /fetch|Failed to fetch|NetworkError/i.test(String(err.message))) {
+                        showMetaError(
+                            t('metaNetworkFailed', { url: META_URL }),
+                            err.message + '\n\n' + t('metaServeOverHttp'),
+                            bootstrap
+                        );
+                        return;
+                    }
+                    if (err instanceof SyntaxError) {
+                        showMetaError(t('invalidJsonInFile', { url: META_URL }), err.message, bootstrap);
+                        return;
+                    }
+                    showMetaError(t('metaNetworkFailed', { url: META_URL }), formatEmbedError(err), bootstrap);
+                });
+        }
+
+        bootstrap();
+
+        window.addEventListener('hashchange', function () {
+            var id = (window.location.hash || '').replace(/^#/, '');
+            if (id && document.getElementById('tabpanel-' + id)) {
+                applyTabSelection(id, false);
+                loadChartsForScreen(id);
+            }
+        });
+    </script>
+</body>
+</html>

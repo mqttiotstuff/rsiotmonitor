@@ -1,0 +1,56 @@
+{
+  "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+  "description": "Heatmap présence : jour du mois × heure (nombre d'événements par créneau d'une heure)",
+  "data": {
+    "url": "http://fhome.frett27.internal:3000/sql/select extract(day from date_trunc('hour', arrow_cast(timestamp,'Timestamp(Microsecond,None)'))) as jour_du_mois, extract(hour from date_trunc('hour', arrow_cast(timestamp,'Timestamp(Microsecond,None)'))) as heure, count(*) as nb_evt from history where topic='home%2Fesp13%2Fsensors%2Fpresence' and year={{YEAR}} and month={{MONTH}} and payload='1' group by date_trunc('hour', arrow_cast(timestamp,'Timestamp(Microsecond,None)'))",
+    "format": { "type": "csv" }
+  },
+  "width": 520,
+  "height": 360,
+  "config": {
+    "axis": { "grid": true },
+    "view": { "stroke": null }
+  },
+  "mark": "rect",
+  "encoding": {
+    "x": {
+      "field": "jour_du_mois",
+      "type": "ordinal",
+      "title": "Jour du mois",
+      "sort": "ascending",
+      "axis": { "labelAngle": 0 }
+    },
+    "y": {
+      "field": "heure",
+      "type": "ordinal",
+      "title": "Heure",
+      "sort": "ascending",
+      "scale": { "reverse": true }
+    },
+    "color": {
+      "field": "nb_evt",
+      "type": "quantitative",
+      "title": "Événements",
+      "scale": { "scheme": "blues", "zero": true },
+      "legend": { "titleOrient": "top", "orient": "right" }
+    },
+    "tooltip": [
+      {
+        "field": "jour_du_mois",
+        "type": "ordinal",
+        "title": "Jour"
+      },
+      {
+        "field": "heure",
+        "type": "ordinal",
+        "title": "Heure"
+      },
+      {
+        "field": "nb_evt",
+        "type": "quantitative",
+        "title": "Nombre d'événements",
+        "format": ".0f"
+      }
+    ]
+  }
+}

@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>rsiotmonitor — static pages</title>
+    <style>
+        body { font-family: system-ui, sans-serif; max-width: 40rem; margin: 2rem auto; padding: 0 1rem; line-height: 1.5; }
+        code { background: #f0f0f0; padding: 0.1em 0.35em; border-radius: 4px; }
+    </style>
+</head>
+<body>
+    <h1>Static pages</h1>
+    <p>
+        Files in the <code>pages/</code> folder are served at the site root by the rsiotmonitor HTTP server.
+        SQL analytics stay at <code>/sql/…</code> (that route is matched before static files).
+    </p>
+    <ul>
+        <li><a href="/sql.html">SQL playground</a> — run DataFusion queries and view CSV results</li>
+    </ul>
+</body>
+</html>

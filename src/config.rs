@@ -57,7 +57,7 @@ impl Default for MqttConfig {
             username: None,
             password: None,
             url: "".into(),
-            base_topic: "iotmonitor/monitoring".into(),
+            base_topic: "iotmonitor/monitoring".into(), // default
             client_id: None,
             tls_server_ca_file: None,
             tls_mozilla_root_cas: false,
@@ -74,18 +74,41 @@ pub async fn read_configuration() -> mqtt_async_client::Result<IOTMonitor> {
     let mut mqtt_config = MqttConfig::default();
 
     use std::fs;
+    log::info!("Reading configuration from config.toml");
     let contents = fs::read_to_string("config.toml").expect("cannot read config.toml");
 
     let t = Toml::new(&contents);
 
     let mut history_topic: Option<String> = None;
+    let mut flight_sql_bind: Option<String> = None;
+    let mut http_bind: Option<String> = None;
+    let mut http_port: Option<u16> = None;
+    let mut analytic_timeout_execute_secs: Option<u64> = None;
+    let mut analytic_timeout_stream_secs: Option<u64> = None;
+    let mut analytic_max_simultaneous_queries: Option<usize> = None;
+    let mut analytic_small_profile: Option<bool> = None;
 
     let devices: Vec<Box<MonitoringInfo>> = t.iter().fold(Vec::new(), |acc, i| {
         let mut m = acc;
         if let toml_parse::Value::Table(table) = i {
             if table.header() == "mqtt" {
+                log::debug!("Reading mqtt configuration");
                 crate::config::read_mqtt_config_table(&mut mqtt_config, table);
+            } else if table.header() == "http" {
+                log::debug!("Reading http configuration");
+                read_http_config_table(&mut http_bind, &mut http_port, table);
+            } else if table.header() == "analytic" {
+                log::debug!("Reading analytic configuration");
+                read_analytic_config_table(
+                    &mut flight_sql_bind,
+                    &mut analytic_timeout_execute_secs,
+                    &mut analytic_timeout_stream_secs,
+                    &mut analytic_max_simultaneous_queries,
+                    &mut analytic_small_profile,
+                    table,
+                );
             } else if table.header() == "history" {
+                log::debug!("Reading history configuration");
                 for kv in table.items() {
                     if let Some(keyname) = kv.key() {
                         if let Value::StrLit(s) = kv.value() {
@@ -97,6 +120,7 @@ pub async fn read_configuration() -> mqtt_async_client::Result<IOTMonitor> {
                 }
             } else {
                 // create MonitorInfo
+                log::debug!("Creating MonitorInfo for {}", table.header());
                 let mut name: String = table.header().into();
                 let mut isagent: bool = false;
 
@@ -134,10 +158,27 @@ pub async fn read_configuration() -> mqtt_async_client::Result<IOTMonitor> {
     let mut opt_history: Option<Arc<History>> = None;
     if let Some(_topics_history) = history_topic.clone() {
         info!("history initialization");
-        opt_history = Some(History::init().unwrap());
+        opt_history = Some(History::init().unwrap_or_else(|e| {
+            log::error!("Error initializing history: {}", e);
+            panic!("error while initializing history: {:?}", e);
+        }));
     }
 
-    let iotmonitor = IOTMonitor::new(mqtt_config, hash, history_topic, opt_history);
+    let iotmonitor = IOTMonitor::new(
+        mqtt_config,
+        hash,
+        history_topic,
+        opt_history,
+        flight_sql_bind,
+        http_bind,
+        http_port,
+        analytic_timeout_execute_secs,
+        analytic_timeout_stream_secs,
+        analytic_max_simultaneous_queries,
+        analytic_small_profile,
+    );
+
+    log::debug!("IOTMonitor created: {:?}", iotmonitor);
 
     Ok(iotmonitor)
 }
@@ -151,6 +192,7 @@ pub fn update_monitorinfo_from_config_table(
         if let Some(keyname) = kv.key() {
             if let Value::StrLit(s) = kv.value() {
                 match keyname {
+                    // read keys from configuration : watchTimeOut, helloTopic, watchTopics, stateTopics
                     // watchTimeOut : watch dog for alive state, when the timeout is reached without and interactions on watchTopics, then iotmonitor trigger an expire message for the device
                     // helloTopic : the topic to observe to welcome the device. This topic trigger the state recovering for the device and agents. IotMonitor, resend the previous stored stateTopics
                     // watchTopics : the topic pattern to observe to know the device is alive
@@ -201,6 +243,107 @@ pub fn read_process_informations_from_config_table(
     monitor_info.associated_process_information = Some(Box::new(additional_process_info));
 }
 
+/// `[http]` bind address and port for the analytic HTTP server (CLI overrides when flags are set).
+pub fn read_http_config_table(
+    bind: &mut Option<String>,
+    port: &mut Option<u16>,
+    table: &toml_parse::Table,
+) {
+    assert!(table.header() == "http");
+    for kv in table.items() {
+        if let Some(keyname) = kv.key() {
+            match keyname {
+                "bind" => {
+                    if let Value::StrLit(s) = kv.value() {
+                        *bind = Some(s.clone());
+                    }
+                }
+                "port" => {
+                    if let Some(p) = http_port_from_value(kv.value()) {
+                        *port = Some(p);
+                    }
+                }
+                _ => debug!("unknown key in [http] section: {}", keyname),
+            }
+        }
+    }
+}
+
+fn http_port_from_value(v: &Value) -> Option<u16> {
+    match v {
+        Value::Int(i) => {
+            if *i >= 0 && *i <= u16::MAX as i64 {
+                Some(*i as u16)
+            } else {
+                None
+            }
+        }
+        Value::StrLit(s) => s.parse().ok(),
+        _ => None,
+    }
+}
+
+/// Optional `[analytic]` settings. Command-line flags override these when provided (see `main`).
+pub fn read_analytic_config_table(
+    flight_sql_bind: &mut Option<String>,
+    timeout_execute_secs: &mut Option<u64>,
+    timeout_stream_secs: &mut Option<u64>,
+    max_simultaneous_queries: &mut Option<usize>,
+    small_profile: &mut Option<bool>,
+    table: &toml_parse::Table,
+) {
+    assert!(table.header() == "analytic");
+    for kv in table.items() {
+        if let Some(keyname) = kv.key() {
+            let v = kv.value();
+            match keyname {
+                "flightSqlBind" => {
+                    if let Value::StrLit(s) = v {
+                        *flight_sql_bind = Some(s.clone());
+                    }
+                }
+                "timeoutToExecuteQuery" => {
+                    if let Some(n) = positive_u64(v) {
+                        *timeout_execute_secs = Some(n);
+                    }
+                }
+                "timeoutToStream" => {
+                    if let Some(n) = positive_u64(v) {
+                        *timeout_stream_secs = Some(n);
+                    }
+                }
+                "maxSimultaneousQueries" => {
+                    if let Some(n) = positive_usize(v) {
+                        *max_simultaneous_queries = Some(n);
+                    }
+                }
+                "smallProfile" => {
+                    if let Value::Bool(b) = v {
+                        *small_profile = Some(*b);
+                    }
+                }
+                _ => debug!("unknown key in [analytic] section: {}", keyname),
+            }
+        }
+    }
+}
+
+fn positive_u64(v: &Value) -> Option<u64> {
+    match v {
+        Value::Int(i) if *i > 0 => Some(*i as u64),
+        Value::StrLit(s) => s.parse().ok(),
+        _ => None,
+    }
+}
+
+fn positive_usize(v: &Value) -> Option<usize> {
+    match v {
+        Value::Int(i) if *i > 0 && *i <= usize::MAX as i64 => Some(*i as usize),
+        Value::StrLit(s) => s.parse().ok(),
+        _ => None,
+    }
+}
+
 pub fn read_mqtt_config_table(config: &mut MqttConfig, table: &toml_parse::Table) {
     assert!(table.header() == "mqtt");
     for kv in table.items() {
@@ -223,7 +366,7 @@ pub fn read_mqtt_config_table(config: &mut MqttConfig, table: &toml_parse::Table
                         config.username = Some(s.clone());
                     }
                     s => {
-                        panic!("unknown mqtt section property : {}", s);
+                        panic!("unknown mqtt section property : {}, only serverAddress, baseTopic, password, clientid, user are allowed", s);
                     }
                 }
             }

@@ -1,0 +1,78 @@
+{
+  "$schema": "./meta.schema.json",
+  "pageTitle": "MQTT Hive dashboards",
+  "defaults": {
+    "year": 2026,
+    "month": 4
+  },
+  "introHtml": " Vega editor: <a href=\"https://vega.github.io/editor/\" target=\"_blank\" rel=\"noopener\">vega.github.io/editor</a>",
+  "screens": [
+    {
+      "id": "presence-heatmap",
+      "title": "Présence — heatmap (heure × jour)",
+      "description": "",
+      "layout": { "flow": "row", "gap": "20px" },
+      "charts": [
+        {
+          "id": "presence-journee",
+          "title": "Heatmap — history (journée)",
+          "description": "Même vue heure × jour, données <code>history</code>.",
+          "spec": "presence_journee.json",
+          "layout": { "span": "half" }
+        },
+        {
+          "id": "heatmap-hive",
+          "title": "Historique sur le mois sélectionné",
+          "description": "Agrégation horaire sur table partitionnée.",
+          "spec": "vega-spec.json",
+          "layout": { "span": "half" }
+        },
+        {
+          "id": "presence-year-by-month",
+          "title": "Présence — année complète par mois",
+          "description": "Same presence metric as the heatmap (<code>sum(Int32(payload))</code> with <code>payload='1'</code>), aggregated by month for the <strong>Year</strong> control. SQL uses only <code>{{YEAR}}</code> (not <code>{{MONTH}}</code>).",
+          "spec": "presence-year-by-month.json",
+          "layout": { "span": "full", "breakBefore": true }
+        }
+      ]
+    },
+    {
+      "id": "multi-chart-demo",
+      "title": "Disposition multi-graphique (ligne + saut de ligne)",
+      "description": "First row: two charts side by side (<code>half</code>). Second row: full-width chart after <code>breakBefore</code>.",
+      "layout": {
+        "flow": "row",
+        "gap": "20px"
+      },
+      "charts": [
+        {
+          "id": "heatmap",
+          "title": "Heatmap",
+          "description": "<code>span: half</code> — shares the row.",
+          "spec": "vega-spec.json",
+          "layout": { "span": "half" }
+        },
+        {
+          "id": "heatmap-copy",
+          "title": "Heatmap (same spec)",
+          "description": "Second column.",
+          "spec": "vega-spec.json",
+          "layout": { "span": "half" }
+        },
+        {
+          "id": "events-below",
+          "title": "Events by day",
+          "description": "<code>breakBefore: true</code> + <code>span: full</code> — new row, full width.",
+          "spec": "events.json",
+          "layout": { "breakBefore": true, "span": "full" }
+        }
+      ]
+    },
+    {
+      "id": "events-by-month-rolling",
+      "title": "Tous les évènements",
+      "description": "liste de tous les évènements enregistrés sur la période sélectionnée",
+      "spec": "events-by-month-rolling.json"
+    }
+  ]
+}

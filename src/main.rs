@@ -1,5 +1,3 @@
-// use futures_core::future;
-
 #[allow(unused_imports)]
 use log::{debug, error, info, trace, warn};
 
@@ -22,8 +20,12 @@ use structopt::StructOpt;
 
 use tokio::{net::TcpListener, time::Duration};
 
-use rsiotmonitor::{history::History, process::ProcessIterator, *};
-use std::{error::Error as RustError, io, path::PathBuf, sync::Arc, time::SystemTime};
+pub use rsiotmonitor::history::*;
+
+use rsiotmonitor::{process::ProcessIterator, *};
+use std::{
+    error::Error as RustError, io, net::Ipv4Addr, path::PathBuf, sync::Arc, time::SystemTime,
+};
 use tokio_cron_scheduler::{Job, JobScheduler};
 
 use crate::mqtt_utils::*;
@@ -33,6 +35,7 @@ async fn wait_2s() -> mqtt_async_client::Result<()> {
     Ok(())
 }
 
+/// History recording loop
 async fn history_and_run(
     histo_topic: String,
     monitor: &Arc<tokio::sync::RwLock<IOTMonitor>>,
@@ -252,25 +255,11 @@ fn wrap_already_exists_processes(config: IOTMonitor) -> IOTMonitor {
                         debug!("{} found", &name);
 
                         if let Some(mi) = c.monitored_devices_mut().get_mut(&name) {
-                            match &mut mi.associated_process_information {
-                                Some(api) => {
-                                    api.pid = Some(p.pid);
-                                    info!("{} attached with pid {}", &name, p.pid);
-                                }
-                                None => {}
+                            if let Some(api) = &mut mi.associated_process_information {
+                                api.pid = Some(p.pid);
+                                info!("{} attached with pid {}", &name, p.pid);
                             }
                         }
-
-                        // match c.monitored_devices_mut().get_mut(&name) {
-                        //     Some(mi) => match &mut mi.associated_process_information {
-                        //         Some(api) => {
-                        //             api.pid = Some(p.pid);
-                        //             info!("{} attached with pid {}", &name, p.pid);
-                        //         }
-                        //         None => {}
-                        //     },
-                        //     None => {}
-                        // }
                     }
                 }
             }
@@ -283,6 +272,7 @@ fn wrap_already_exists_processes(config: IOTMonitor) -> IOTMonitor {
 use chrono::DateTime;
 use chrono::{offset::Utc, Datelike, Days};
 
+// batch creation of the history archive
 fn export_history_day_from_datetime(
     hist_database: Arc<History>,
     triggered_date: DateTime<Utc>,
@@ -324,7 +314,10 @@ fn export_history_day_from_datetime(
 
 /// start method
 #[allow(unreachable_code)]
-async fn start(config: IOTMonitor) -> Result<(), Box<dyn RustError>> {
+async fn start(
+    config: IOTMonitor,
+    activate_statistics_on_monitor: bool,
+) -> Result<(), Box<dyn RustError>> {
     // set scheduling
 
     if let Some(hist) = config.history.clone() {
@@ -419,7 +412,7 @@ async fn start(config: IOTMonitor) -> Result<(), Box<dyn RustError>> {
         }
     }
 
-    // main loop, reconnect
+    // main loop, reconnect, send statistics
     loop {
         let conn_result = main_client_connection.connect().await;
 
@@ -524,8 +517,37 @@ async fn start(config: IOTMonitor) -> Result<(), Box<dyn RustError>> {
                                 let publish_result = cnx_mqtt.publish(&pexpired).await;
                                 if let Err(_e) = publish_result {
                                     warn!("error in publishing the health check");
-                                    break;
+                                    break; // try to reconnect
                                 }
+                            }
+                        }
+
+                        if activate_statistics_on_monitor {
+                            // push process statistics
+                            // get current process pid
+                            let current_process_pid = std::process::id();
+                            let process_statistics =
+                                process::get_process_statistics(current_process_pid);
+                            if let Ok(process_statistics) = process_statistics {
+                                debug!("process statistics: {:?}", process_statistics);
+                                // serialize to json, in mqtt format
+                                if let Ok(json_data) = serde_json::to_string(&process_statistics) {
+                                    let mut pprocess_statistics = PublishOpts::new(
+                                        format!("{}/process_statistics", l_base_topic),
+                                        json_data.as_bytes().to_vec(),
+                                    );
+                                    pprocess_statistics.set_qos(int_to_qos(1));
+                                    pprocess_statistics.set_retain(false);
+                                    let publish_result =
+                                        cnx_mqtt.publish(&pprocess_statistics).await;
+                                    if let Err(_e) = publish_result {
+                                        warn!("error in publishing process statistics");
+                                    }
+                                } else {
+                                    warn!("error in serializing process statistics");
+                                }
+                            } else {
+                                warn!("error in getting process statistics");
                             }
                         }
 
@@ -569,20 +591,61 @@ async fn start(config: IOTMonitor) -> Result<(), Box<dyn RustError>> {
 struct Opt {
     /// Activate debug mode
     // short and long flags (-d, --debug) will be deduced from the field's name
-    #[structopt(long)]
+    #[structopt(long, help = "Activate debug mode")]
     debug: bool,
 
-    #[structopt(long, name = "embeddedMqtt")]
+    #[structopt(long, name = "embeddedMqtt", help = "Activate embedded mqtt server")]
     embedded_mqtt: bool,
 
-    #[structopt(long, default_value = "0.0.0.0:1884", name = "embeddedMqttBindOptions")]
+    #[structopt(
+        long,
+        default_value = "0.0.0.0:1884",
+        name = "embeddedMqttBindOptions",
+        help = "Bind options for embedded mqtt server"
+    )]
     embedded_mqtt_bind_options: String,
 
-    #[structopt(long)]
-    disable: Option<String>,
+    #[structopt(
+        long,
+        name = "httpServerAddress",
+        help = "Overrides config.toml [http] bind when set; otherwise use that bind or 0.0.0.0"
+    )]
+    http_server_address: Option<String>,
 
-    #[structopt(long)]
-    enable: Option<String>,
+    #[structopt(
+        long,
+        name = "httpServerPort",
+        help = "Overrides config.toml [http] port when set; otherwise use that port or 3000"
+    )]
+    http_server_port: Option<u16>,
+
+    /// Small analytic profile; overrides `[analytic]` `smallProfile` in config.toml when set (`true` / `false`).
+    #[structopt(long, name = "analyticSmallProfile")]
+    analytic_small_profile: Option<bool>,
+
+    /// Overrides `[analytic]` `timeoutToExecuteQuery` in config.toml when set.
+    #[structopt(long, name = "analyticTimeoutToExecuteQuery")]
+    analytic_timeout_to_execute_query: Option<u64>,
+
+    /// Overrides `[analytic]` `maxSimultaneousQueries` in config.toml when set.
+    #[structopt(long, name = "analyticMaxSimultaneousQueries")]
+    analytic_max_simultaneous_queries: Option<usize>,
+
+    /// Overrides `[analytic]` `timeoutToStream` in config.toml when set.
+    #[structopt(long, name = "analyticTimeoutToStream")]
+    analytic_timeout_to_stream: Option<u64>,
+
+    /// Bind address for Arrow Flight SQL (e.g. `0.0.0.0:50051`). Overrides `[analytic]` `flightSqlBind`
+    /// in config.toml when set; otherwise Flight SQL is disabled unless configured in the file.
+    #[structopt(long, name = "flightSqlBind")]
+    flight_sql_bind: Option<String>,
+
+    #[structopt(
+        long,
+        name = "activateStatisticsOnMonitor",
+        help = "Activate statistics for monitor process"
+    )]
+    activate_statistics_on_monitor: bool,
 
     #[structopt(long)]
     command_archive_history_date: Option<String>,
@@ -591,6 +654,7 @@ struct Opt {
     command_create_snapshot: Option<String>,
 }
 
+/// TCP server loop
 async fn tcp_server_loop(
     broker_tx: tokio::sync::mpsc::Sender<BrokerMessage>,
     bind_options: String,
@@ -606,19 +670,17 @@ async fn tcp_server_loop(
     }
 }
 
-/// Websocket tcp address TODO: make this configurable
+/// Websocket tcp address
 const WEBSOCKET_TCP_LISTENER_ADDR: &str = "0.0.0.0:8088";
 
 async fn websocket_server_loop(
     broker_tx: tokio::sync::mpsc::Sender<BrokerMessage>,
 ) -> io::Result<()> {
+    let listener = TcpListener::bind(WEBSOCKET_TCP_LISTENER_ADDR).await?;
     info!(
         "MQTTServer Listening on {} for websocket",
         WEBSOCKET_TCP_LISTENER_ADDR
     );
-
-    let listener = TcpListener::bind(WEBSOCKET_TCP_LISTENER_ADDR).await?;
-
     loop {
         let (socket, addr) = listener.accept().await?;
         debug!("Client {} connected (websocket)", addr);
@@ -655,25 +717,31 @@ async fn launch_mqtt_server(opt: Opt) -> Result<(), Box<dyn std::error::Error>> 
 /// main procedure
 #[tokio::main]
 async fn main() {
-    env_logger::init();
+    if let Err(e) =
+        env_logger::try_init_from_env(env_logger::Env::default().default_filter_or("info"))
+    {
+        log::error!("Error initializing logger: {}", e);
+    }
 
     let opt = Opt::from_args();
 
     // handling commands
     if let Some(export_history_to_parse) = &opt.command_archive_history_date {
-        println!(
+        info!(
             "handling history export on date : {}",
             export_history_to_parse
         );
 
-        let config = crate::config::read_configuration().await.unwrap();
+        let config = crate::config::read_configuration()
+            .await
+            .expect("error while reading the configuration");
         if let Some(history) = config.history {
             let day: DateTime<Utc> = DateTime::parse_from_rfc3339(export_history_to_parse)
                 .expect("error while parsing the date, date must be passed as iso860, eg: 2023-09-17T00:00:00Z")
                 .into();
             export_history_day_from_datetime(history, day).unwrap();
 
-            println!("export done");
+            info!("export done");
             return;
         } else {
             panic!("no history configured, cannot export history on date");
@@ -681,14 +749,24 @@ async fn main() {
     }
 
     if let Some(export_snapshot) = &opt.command_create_snapshot {
-        let config = crate::config::read_configuration().await.unwrap();
+        info!(
+            "handling snapshot from history on date : {}",
+            export_snapshot
+        );
+        let config = crate::config::read_configuration()
+            .await
+            .unwrap_or_else(|e| {
+                log::error!("Error reading configuration: {}", e);
+                panic!("error while reading the configuration: {:?}", e);
+            });
 
         if let Some(history) = config.history {
+            info!("exporting history");
             if let Err(e) = history.export_to_parquet(export_snapshot, None, false) {
                 error!("Error while exporting to parquet {}", e);
                 panic!("error while exporting : {:?}", e);
             }
-            println!("snapshot done");
+            info!("snapshot done");
             return;
         } else {
             panic!("no history configured, cannot create snapshot");
@@ -705,13 +783,145 @@ async fn main() {
         });
     }
 
-    let config = crate::config::read_configuration().await.unwrap();
+    let config = crate::config::read_configuration()
+        .await
+        .unwrap_or_else(|e| {
+            log::error!("Error reading configuration: {}", e);
+            panic!("error while reading the configuration: {:?}", e);
+        });
+
+    let start_http_server = opt.http_server_address.is_some()
+        || opt.http_server_port.is_some()
+        || config.http_bind.is_some()
+        || config.http_port.is_some();
+
+    // Shared with Flight SQL (`HistoryAnalyticProfile`).
+    let analytic_small_profile_effective = opt
+        .analytic_small_profile
+        .or(config.analytic_small_profile)
+        .unwrap_or(false);
 
     debug!("Starting with config : {:?}\n", &config);
 
-    let _http_server = tokio::task::spawn(async move {
-        httpserver::server_start(([0, 0, 0, 0], 3000)).await;
-    });
+    let flight_history = config.history.clone();
+    // Flight SQL bind: CLI overrides `[analytic]` flightSqlBind.
+    let flight_sql_bind = opt
+        .flight_sql_bind
+        .clone()
+        .or_else(|| config.flight_sql_bind.clone());
+    let flight_profile = if analytic_small_profile_effective {
+        crate::history::HistoryAnalyticProfile::Small
+    } else {
+        crate::history::HistoryAnalyticProfile::Default
+    };
 
-    start(config).await.unwrap();
+    if start_http_server {
+        let http_server_address_str = opt
+            .http_server_address
+            .clone()
+            .or_else(|| config.http_bind.clone())
+            .unwrap_or_else(|| "0.0.0.0".into());
+        let http_server_port = opt
+            .http_server_port
+            .or(config.http_port)
+            .unwrap_or(3000);
+        let http_server_address = http_server_address_str
+            .parse::<Ipv4Addr>()
+            .expect("error while parsing the http server address, must be a valid ipv4 address");
+
+        log::info!(
+            "Analytic HTTP /sql listening on {}:{} (same as `[http]` port in config.toml)",
+            http_server_address,
+            http_server_port
+        );
+
+        let analytic_timeout_to_execute_query = Duration::from_secs(
+            opt.analytic_timeout_to_execute_query
+                .or(config.analytic_timeout_execute_secs)
+                .unwrap_or(60),
+        );
+        let analytic_timeout_to_stream = Duration::from_secs(
+            opt.analytic_timeout_to_stream
+                .or(config.analytic_timeout_stream_secs)
+                .unwrap_or(600),
+        );
+        let analytic_max_simultaneous_queries = opt
+            .analytic_max_simultaneous_queries
+            .or(config.analytic_max_simultaneous_queries)
+            .unwrap_or(5);
+
+        info!(
+            "Analytic sql timeout: {} s",
+            analytic_timeout_to_execute_query.as_secs()
+        );
+        info!(
+            "Analytic stream timeout: {} s",
+            analytic_timeout_to_stream.as_secs()
+        );
+
+        let http_history = config.history.clone();
+
+        let _http_server = tokio::task::spawn(async move {
+            if http_history.is_none() {
+                log::info!(
+                    "Starting HTTP on {}:{} (no [history] storageTopic — /sql unavailable until history is configured)",
+                    http_server_address,
+                    http_server_port
+                );
+            } else {
+                log::info!(
+                    "Starting http server on {}:{}",
+                    http_server_address,
+                    http_server_port
+                );
+            }
+
+            let http_server_config = httpserver::HttpServerConfig {
+                v4_binding: (http_server_address.into(), http_server_port),
+                sql_endpoint_config: httpserver::HttpSqlEndPointConfig {
+                    simultaneous_queries: analytic_max_simultaneous_queries,
+                    max_attempts_to_acquire_slot: 100,
+                    timeout_to_acquire_slot: httpserver::DEFAULT_TIMEOUT_TO_ACQUIRE_SLOT,
+                    timeout_to_execute_query: analytic_timeout_to_execute_query,
+                    timeout_to_stream: analytic_timeout_to_stream,
+                    analytic_profile_type: if analytic_small_profile_effective {
+                        Some(httpserver::AnalyticProfileType::Small)
+                    } else {
+                        None
+                    },
+                },
+            };
+
+            httpserver::server_start(http_server_config, http_history).await;
+        });
+    } else {
+        log::info!(
+            "HTTP server not enabled (set `[http]` bind/port in config.toml or use --http-server-address / --http-server-port)"
+        );
+    }
+
+    if let Some(bind) = flight_sql_bind {
+        if let Some(hist) = flight_history {
+            tokio::spawn(async move {
+                match crate::history::flight_sql::serve_history_flight_sql(
+                    hist,
+                    bind.clone(),
+                    flight_profile,
+                )
+                .await
+                {
+                    Ok(()) => log::warn!("Arrow Flight SQL server on {bind} stopped"),
+                    Err(e) => log::error!("Arrow Flight SQL server error: {e}"),
+                }
+            });
+        } else {
+            log::warn!(
+                "Skipping Arrow Flight SQL on {bind}: no history database (add [history] storageTopic)"
+            );
+        }
+    }
+
+    start(config, opt.activate_statistics_on_monitor)
+        .await
+        .unwrap();
 }

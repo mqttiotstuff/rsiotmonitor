@@ -1,7 +1,7 @@
 #[allow(unused_imports)]
 use log::{debug, error, info, trace, warn};
 use mqtt_async_client::client::{Client, KeepAlive, QoS};
-use rustls::{ClientConfig, OwnedTrustAnchor, RootCertStore};
+use rustls::{ClientConfig, RootCertStore};
 use std::{fs::File, io::BufReader, time::Duration};
 
 // #[cfg(feature = "tls")]
@@ -36,27 +36,20 @@ pub fn client_from_args(args: &MqttConfig) -> mqtt_async_client::Result<Client> 
             let mut reader = BufReader::new(certfile);
 
             root_store.add_parsable_certificates(
-                &rustls_pemfile::certs(&mut reader).expect("cannot read the certificate"),
+                rustls_pemfile::certs(&mut reader).map(|c| c.unwrap()),
             );
 
             let cc = ClientConfig::builder()
-                .with_safe_defaults()
                 .with_root_certificates(root_store)
                 .with_no_client_auth();
 
             Some(cc)
         } else if args.tls_mozilla_root_cas {
-            let mut root_store = RootCertStore::empty();
-            root_store.add_trust_anchors(webpki_roots::TLS_SERVER_ROOTS.iter().map(|ta| {
-                OwnedTrustAnchor::from_subject_spki_name_constraints(
-                    ta.subject,
-                    ta.spki,
-                    ta.name_constraints,
-                )
-            }));
-
-            let cc = rustls::ClientConfig::builder()
-                .with_safe_defaults()
+            let root_store = rustls::RootCertStore {
+                roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
+            };
+            
+            let cc = tokio_rustls::rustls::ClientConfig::builder()             
                 .with_root_certificates(root_store)
                 .with_no_client_auth();
             // cc.root_store
@@ -92,6 +85,8 @@ pub fn client_from_args(args: &MqttConfig) -> mqtt_async_client::Result<Client> 
         // };
 
         if let Some(c) = cc {
+            // add secure options for clients
+            log::debug!("Adding secure options for client");
             b.set_tls_client_config(c);
         }
     }
@@ -109,34 +104,22 @@ pub fn int_to_qos(qos: u8) -> QoS {
     }
 }
 
-/**
- * does the evaluated topic contains the tested_topic match
- */
-pub fn does_topic_match(tested_topic: &String, evaluated_topic: &String) -> bool {
-    let mut tested = tested_topic.clone();
-    if tested_topic.ends_with('#') {
-        tested = (tested[0..tested.len() - 1]).to_string();
-        evaluated_topic.starts_with(&tested)
-    } else if tested_topic.eq("") {
+/// Whether `evaluated_topic` matches the MQTT filter `tested_topic`.
+pub fn does_topic_match(tested_topic: &str, evaluated_topic: &str) -> bool {
+    if let Some(prefix) = tested_topic.strip_suffix('#') {
+        evaluated_topic.starts_with(prefix)
+    } else if tested_topic.is_empty() {
         true
     } else {
-        evaluated_topic.eq(&tested)
+        evaluated_topic == tested_topic
     }
 }
 
-/// Test does_topic_match function
 #[test]
 fn test_does_topic_match() {
-    assert!(!does_topic_match(
-        &"home".to_string(),
-        &"home/toto".to_string()
-    ));
-    assert!(does_topic_match(
-        &"home/#".to_string(),
-        &"home/toto".to_string()
-    ));
-    assert!(!does_topic_match(&"toto".to_string(), &"tutu".to_string()));
-
-    assert!(does_topic_match(&"".to_string(), &"tutu".to_string()));
-    assert!(does_topic_match(&"#".to_string(), &"tutu".to_string()));
+    assert!(!does_topic_match("home", "home/toto"));
+    assert!(does_topic_match("home/#", "home/toto"));
+    assert!(!does_topic_match("toto", "tutu"));
+    assert!(does_topic_match("", "tutu"));
+    assert!(does_topic_match("#", "tutu"));
 }

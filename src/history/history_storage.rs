@@ -1,7 +1,7 @@
 use std::path::Path;
 use std::sync::Arc;
 use std::time::SystemTime;
-use std::{fmt, fs, u128};
+use std::{fmt, fs};
 
 use chrono::Datelike;
 use leveldb::compaction::Compaction;
@@ -11,6 +11,7 @@ use leveldb::options::{Options, ReadOptions, WriteOptions};
 
 #[allow(unused_imports)]
 use log::{debug, error, info, trace, warn};
+
 use parquet::data_type::{ByteArray, ByteArrayType, Int32Type, Int64Type};
 use parquet::file::properties::WriterProperties;
 use parquet::file::writer::SerializedFileWriter;
@@ -22,22 +23,54 @@ use std::convert::TryInto;
 
 use std::error::Error;
 
+pub(crate) fn naive_from_timestamp_us(timestamp: i64) -> chrono::NaiveDateTime {
+    chrono::DateTime::from_timestamp_micros(timestamp)
+        .expect("timestamp out of range")
+        .naive_utc()
+}
+
 /// Content of the value column
-struct TopicPayload<'a> {
-    topic: String,
-    payload: &'a [u8],
+pub struct TopicPayload<'a> {
+    pub topic: String,
+    pub payload: &'a [u8],
 }
 
 impl<'a> TopicPayload<'a> {
-    fn from_u8(key: &'a [u8]) -> TopicPayload<'a> {
-        let tb = key[0..2].try_into().unwrap();
-        let topic_size: usize = u16::from_le_bytes(tb).try_into().unwrap();
-        let topic: String = String::from_utf8(key[2..2 + topic_size].to_vec()).unwrap();
-        let payload = &key[2 + topic_size..];
+    /// Split a LevelDB value into topic and payload bytes without allocating.
+    pub fn split_value(value: &'a [u8]) -> Option<(&'a [u8], &'a [u8])> {
+        if value.len() < 2 {
+            return None;
+        }
+        let topic_size = u16::from_le_bytes(value[0..2].try_into().ok()?) as usize;
+        let end = 2usize.checked_add(topic_size)?;
+        if value.len() < end {
+            return None;
+        }
+        Some((&value[2..end], &value[end..]))
+    }
+
+    pub fn topic_bytes_match(value: &[u8], expected: &[u8]) -> bool {
+        if value.len() < 2 {
+            return false;
+        }
+        let topic_size = match value[0..2].try_into().ok().map(u16::from_le_bytes) {
+            Some(size) => size as usize,
+            None => return false,
+        };
+        let end = match 2usize.checked_add(topic_size) {
+            Some(end) => end,
+            None => return false,
+        };
+        value.len() >= end && &value[2..end] == expected
+    }
+
+    pub fn from_u8(key: &'a [u8]) -> TopicPayload<'a> {
+        let (topic_bytes, payload) = Self::split_value(key).unwrap();
+        let topic = String::from_utf8(topic_bytes.to_vec()).unwrap();
         TopicPayload { topic, payload }
     }
 
-    fn as_slice<T, F: Fn(&[u8]) -> Result<T, Box<dyn Error>>>(
+    pub fn as_slice<T, F: Fn(&[u8]) -> Result<T, Box<dyn Error>>>(
         &self,
         f: F,
     ) -> Result<T, Box<dyn Error>> {
@@ -61,11 +94,47 @@ impl fmt::Display for HistoryError {
 
 impl Error for HistoryError {}
 
+/// 
+/// History database structure
+/// 
 pub struct History {
-    database: Arc<Database>,
+    /// database handle
+    pub database: Arc<Database>,
 }
 
 impl History {
+
+    /// Open (or create) a LevelDB history at `path` without repair/compaction.
+    pub fn open_at(path: impl AsRef<Path>) -> Result<Arc<History>, Box<dyn Error>> {
+        let path = path.as_ref();
+        let mut options = Options::new();
+        options.create_if_missing = true;
+
+        let database = Database::open(path, &options).map_err(|e| {
+            error!("failed to open database at {:?}: {:?}", path, e);
+            Box::new(HistoryError) as Box<dyn Error>
+        })?;
+
+        Ok(Arc::new(History {
+            database: Arc::new(database),
+        }))
+    }
+
+    /// Isolated database for unit tests (unique temp dir per call; safe under parallel `cargo test`).
+    #[cfg(test)]
+    pub fn init_for_test() -> Result<Arc<History>, Box<dyn Error>> {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        static TEST_DB_COUNTER: AtomicU64 = AtomicU64::new(0);
+        let n = TEST_DB_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "rsiotmonitor-history-{}-{}",
+            std::process::id(),
+            n
+        ));
+        Self::open_at(path)
+    }
+
     /// init the history, and open the archive database
     pub fn init() -> Result<Arc<History>, Box<dyn Error>> {
         let path = Path::new("history");
@@ -78,20 +147,13 @@ impl History {
             warn!("the repair action is not successfull, or database does not exists, continue");
         };
 
-        let database = match Database::open(path, &options) {
-            Ok(db) => db,
-            Err(e) => {
-                panic!("failed to open database: {:?}", e);
-            }
-        };
-        println!("database compaction");
-        database.compact(&[], &[255, 255, 255, 255, 255, 255, 255, 255, 255]);
+        let history = Self::open_at(path)?;
+        history.database.compact(&[], &[255, 255, 255, 255, 255, 255, 255, 255, 255]);
 
-        Ok(Arc::new(History {
-            database: Arc::new(database),
-        }))
+        Ok(history)
     }
 
+    // store an event to levedb database
     pub fn store_event(&self, topic: String, payload: &[u8]) -> Result<(), Box<dyn Error>> {
         let instant = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
@@ -112,7 +174,7 @@ impl History {
 
         let p = TopicPayload { topic, payload };
 
-        return p.as_slice(|payload_bytes| {
+        p.as_slice(|payload_bytes| {
             debug!("payload : {:?}", payload_bytes);
             match self.database.put(&write_opts, &timestamp, payload_bytes) {
                 Ok(_) => Ok(()),
@@ -121,10 +183,15 @@ impl History {
                     Err(Box::new(HistoryError {}))
                 }
             }
-        });
+        })
     }
 
-    // export the current database events to a parquet file
+    /// export the current database events to a parquet file
+    /// @param output_file: the path to the output file
+    /// @param date_range: the date range to export
+    /// @param delete_values: if true, delete the values after exporting
+    /// @return the result of the operation
+    /// delete_values: if true, delete the values after exporting
     pub fn export_to_parquet(
         &self,
         output_file: &str,
@@ -150,20 +217,17 @@ impl History {
                 .set_compression(parquet::basic::Compression::SNAPPY)
                 .build(),
         );
-        let file = fs::File::create(path).unwrap();
-        let mut writer = SerializedFileWriter::new(file, schema, props).unwrap();
+        let file = fs::File::create(path)?;
+        let mut writer = SerializedFileWriter::new(file, schema, props)?;
 
         // writing rows count ..
-        let mut cpt: u128;
-
-        let mut it = self.database.iter(&ReadOptions::new());
-
+        let mut cpt: u64;
+        let mut it = Box::new(self.database.iter(&ReadOptions::new()));
         let mut row = it.next();
-
         let mut last: Option<i64> = None;
 
         while row.is_some() {
-            let mut row_group_writer = writer.next_row_group().unwrap();
+            let mut row_group_writer = writer.next_row_group()?;
 
             cpt = 1;
 
@@ -175,7 +239,7 @@ impl History {
             let mut all_payloads: Vec<Vec<u8>> = Vec::new();
 
             // read 10_000 rows in the memory vector to create the parquet group
-            while row.is_some() && cpt % 10_000 != 0 {
+            while row.is_some() && !cpt.is_multiple_of(10_000) {
                 if let Some(a) = row.as_ref() {
                     let timestamp = i64::from_u8(&a.0);
 
@@ -195,9 +259,7 @@ impl History {
                         all_timestamps.push(tbytes);
 
                         // year, month, day
-                        let naive =
-                            chrono::NaiveDateTime::from_timestamp_opt(timestamp / 1_000_000, 0)
-                                .unwrap();
+                        let naive = naive_from_timestamp_us(timestamp);
                         let date = naive.date();
                         let year: i32 = date.year();
                         all_year.push(year);
@@ -208,7 +270,7 @@ impl History {
                         all_days.push(day);
 
                         cpt += 1;
-                        if cpt % 10_000 == 0 {
+                        if cpt.is_multiple_of(10_000) {
                             debug!("{} elements exported", cpt);
                         }
                     }
@@ -216,120 +278,133 @@ impl History {
                     row = it.next();
                 }
             }
+            {
+                let next_column = row_group_writer.next_column()?;
+                if let Some(mut col_writer) = next_column {
+                    col_writer
+                        .typed::<Int32Type>()
+                        .write_batch(
+                            &all_days, None,
+                            None, // Some(&[3, 3, 3, 2, 2]),
+                                 //Some(&[0, 1, 0, 1, 1]),
+                        )
+                        .expect("error in writing columns");
 
-            if let Some(mut col_writer) = row_group_writer.next_column().unwrap() {
-                col_writer
-                    .typed::<Int32Type>()
-                    .write_batch(
-                        &all_days, None,
-                        None, // Some(&[3, 3, 3, 2, 2]),
-                             //Some(&[0, 1, 0, 1, 1]),
-                    )
-                    .expect("error in writing columns");
-
-                col_writer.close().unwrap();
-            } else {
-                return Err(Box::new(HistoryError {}));
+                    col_writer.close().unwrap();
+                } else {
+                    return Err(Box::new(HistoryError {}));
+                }
             }
 
-            if let Some(mut col_writer) = row_group_writer.next_column().unwrap() {
-                col_writer
-                    .typed::<Int32Type>()
-                    .write_batch(
-                        &all_month, None,
-                        None, // Some(&[3, 3, 3, 2, 2]),
-                             //Some(&[0, 1, 0, 1, 1]),
-                    )
-                    .expect("error in writing columns");
+            {
+                let next_column = row_group_writer.next_column()?;
+                if let Some(mut col_writer) = next_column {
+                    col_writer
+                        .typed::<Int32Type>()
+                        .write_batch(
+                            &all_month, None,
+                            None, // Some(&[3, 3, 3, 2, 2]),
+                                 //Some(&[0, 1, 0, 1, 1]),
+                        )
+                        .expect("error in writing columns");
 
-                col_writer.close().unwrap();
-            } else {
-                return Err(Box::new(HistoryError {}));
+                    col_writer.close().unwrap();
+                } else {
+                    return Err(Box::new(HistoryError {}));
+                }
             }
+            {
+                let next_column = row_group_writer.next_column()?;
+                if let Some(mut col_writer) = next_column {
+                    col_writer
+                        .typed::<Int32Type>()
+                        .write_batch(
+                            &all_year, None,
+                            None, // Some(&[3, 3, 3, 2, 2]),
+                                 //Some(&[0, 1, 0, 1, 1]),
+                        )
+                        .expect("error in writing columns");
 
-            if let Some(mut col_writer) = row_group_writer.next_column().unwrap() {
-                col_writer
-                    .typed::<Int32Type>()
-                    .write_batch(
-                        &all_year, None,
-                        None, // Some(&[3, 3, 3, 2, 2]),
-                             //Some(&[0, 1, 0, 1, 1]),
-                    )
-                    .expect("error in writing columns");
-
-                col_writer.close().unwrap();
-            } else {
-                return Err(Box::new(HistoryError {}));
+                    col_writer.close().unwrap();
+                } else {
+                    return Err(Box::new(HistoryError {}));
+                }
             }
+            {
+                let next_column = row_group_writer.next_column()?;
+                // write the rows in the parquet file
+                if let Some(mut col_writer) = next_column {
+                    col_writer
+                        .typed::<Int64Type>()
+                        .write_batch(
+                            &all_timestamps,
+                            None,
+                            None, // Some(&[3, 3, 3, 2, 2]),
+                                  //Some(&[0, 1, 0, 1, 1]),
+                        )
+                        .expect("error in writing columns");
 
-            // write the rows in the parquet file
-            if let Some(mut col_writer) = row_group_writer.next_column().unwrap() {
-                col_writer
-                    .typed::<Int64Type>()
-                    .write_batch(
-                        &all_timestamps,
-                        None,
-                        None, // Some(&[3, 3, 3, 2, 2]),
-                              //Some(&[0, 1, 0, 1, 1]),
-                    )
-                    .expect("error in writing columns");
-
-                col_writer.close().unwrap();
-            } else {
-                return Err(Box::new(HistoryError {}));
+                    col_writer.close().unwrap();
+                } else {
+                    return Err(Box::new(HistoryError {}));
+                }
             }
+            {
+                let next_column = row_group_writer.next_column()?;
+                if let Some(mut col_writer) = next_column {
+                    // write all
 
-            if let Some(mut col_writer) = row_group_writer.next_column().unwrap() {
-                // write all
+                    let v: Vec<ByteArray> = all_topics
+                        .iter()
+                        .map(|i| ByteArray::from(i.as_bytes()))
+                        .collect();
 
-                let v: Vec<ByteArray> = all_topics
-                    .iter()
-                    .map(|i| ByteArray::from(i.as_bytes()))
-                    .collect();
+                    col_writer
+                        .typed::<ByteArrayType>()
+                        .write_batch(
+                            &v, None,
+                            None, // Some(&[3, 3, 3, 2, 2]),
+                                 //Some(&[0, 1, 0, 1, 1]),
+                        )
+                        .expect("error in writing columns");
 
-                col_writer
-                    .typed::<ByteArrayType>()
-                    .write_batch(
-                        &v, None,
-                        None, // Some(&[3, 3, 3, 2, 2]),
-                             //Some(&[0, 1, 0, 1, 1]),
-                    )
-                    .expect("error in writing columns");
-
-                col_writer.close().unwrap();
-            } else {
-                return Err(Box::new(HistoryError {}));
+                    col_writer.close().unwrap();
+                } else {
+                    return Err(Box::new(HistoryError {}));
+                }
             }
-            if let Some(mut col_writer) = row_group_writer.next_column().unwrap() {
-                // write all
+            {
+                let next_column = row_group_writer.next_column()?;
+                if let Some(mut col_writer) = next_column {
+                    // write all
 
-                let v: Vec<ByteArray> = all_payloads
-                    .iter()
-                    .map(|i| ByteArray::from(i.clone()))
-                    .collect();
+                    let v: Vec<ByteArray> = all_payloads
+                        .iter()
+                        .map(|i| ByteArray::from(i.clone()))
+                        .collect();
 
-                col_writer
-                    .typed::<ByteArrayType>()
-                    .write_batch(
-                        &v, None,
-                        None, // Some(&[3, 3, 3, 2, 2]),
-                             //Some(&[0, 1, 0, 1, 1]),
-                    )
-                    .expect("error in writing columns");
+                    col_writer
+                        .typed::<ByteArrayType>()
+                        .write_batch(
+                            &v, None,
+                            None, // Some(&[3, 3, 3, 2, 2]),
+                                 //Some(&[0, 1, 0, 1, 1]),
+                        )
+                        .expect("error in writing columns");
 
-                col_writer.close().unwrap();
-            } else {
-                return Err(Box::new(HistoryError {}));
+                    col_writer.close().unwrap();
+                } else {
+                    return Err(Box::new(HistoryError {}));
+                }
             }
-
             row_group_writer.close().unwrap();
         }
-
         writer.close().unwrap();
 
         // self.database.delete(&WriteOptions::new(), &key);
 
         if delete_values {
+            debug!("deleting exported records");
             if let Some(last_timestamp) = last {
                 for (k, _v) in self.database.iter(&ReadOptions::new()) {
                     let key_value = i64::from_u8(&k);
@@ -353,7 +428,7 @@ impl History {
 
 #[test]
 pub fn test_storage() {
-    let h = History::init().unwrap();
+    let h = History::init_for_test().unwrap();
     h.store_event("a".into(), "b".as_bytes()).unwrap();
     h.store_event("a1".into(), "b".as_bytes()).unwrap();
     h.store_event("a2".into(), "b".as_bytes()).unwrap();
@@ -368,15 +443,16 @@ pub fn test_storage() {
 
 #[test]
 pub fn test_storage_timestamp() -> Result<(), Box<dyn Error>> {
-    let h = History::init().unwrap();
+
+    let h = History::init_for_test().unwrap();
+    
     for t in 0..63 {
         let e: i64 = 1 << t;
         h.store_event_with_timestamp(e, "a".into(), "b".as_bytes())?;
     }
 
     // dump
-
-    let mut cpt: u128 = 0;
+    let mut cpt: u64 = 0;
     let mut it = h.database.iter(&ReadOptions::new());
 
     // writing rows ..
@@ -405,7 +481,7 @@ pub fn test_storage_timestamp() -> Result<(), Box<dyn Error>> {
 
 #[test]
 pub fn test_export() -> Result<(), Box<dyn Error>> {
-    let h = History::init()?;
+    let h = History::init_for_test()?;
     for _i in 0..100_000 {
         h.store_event("a".into(), "b".as_bytes())?;
         h.store_event("a1".into(), "b".as_bytes())?;
@@ -423,7 +499,7 @@ pub fn test_export() -> Result<(), Box<dyn Error>> {
 
 #[test]
 pub fn test_export_with_range() -> Result<(), Box<dyn Error>> {
-    let h = History::init()?;
+    let h = History::init_for_test()?;
     for _i in 0..100_000 {
         h.store_event_with_timestamp(0, "a".into(), "b".as_bytes())?;
         h.store_event_with_timestamp(1, "a1".into(), "b".as_bytes())?;
@@ -442,7 +518,7 @@ pub fn test_export_with_range() -> Result<(), Box<dyn Error>> {
 
 #[test]
 pub fn export() -> Result<(), Box<dyn Error>> {
-    let h = History::init()?;
+    let h = History::init_for_test()?;
 
     // export to parquet
     h.export_to_parquet("h.parquet", None, false)?;

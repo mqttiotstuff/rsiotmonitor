@@ -1,6 +1,18 @@
-#[http]
-#bind="0.0.0.0"
-#port=7880
+# Test config for development
+
+# Omit [http] entirely (or leave bind/port unset) to disable the analytic HTTP server unless you pass --http-server-*.
+# Port must match clients (e.g. vega-plot/index.html). If 3000 is taken, pick another and update clients / use a reverse proxy.
+[http]
+bind="0.0.0.0"
+port=3001
+
+[analytic]
+# CLI flags override these entries when passed (see --help).
+# flightSqlBind="0.0.0.0:50051"
+# timeoutToExecuteQuery=60
+# timeoutToStream=600
+# maxSimultaneousQueries=5
+# smallProfile=false
 
 [mqtt]
 serverAddress="mqtt://127.0.0.1:1884"

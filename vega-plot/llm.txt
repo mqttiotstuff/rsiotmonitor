@@ -1,0 +1,162 @@
+LLM / assistant documentation — vega-plot/
+==========================================
+
+Version: 1
+
+This file is plain-text guidance for humans and coding assistants. The dashboard
+runtime (index.html) does not read this file; it only loads meta.json and Vega
+JSON. Prefer README.md for end-user documentation; AGENTS.md and agent-guide.json
+for structured workflows.
+
+Overview
+--------
+
+Human-readable documentation: README.md in this folder (vega-plot/README.md).
+
+For coding assistants: AGENTS.md (workflows) and agent-guide.json (structured
+tasks and constraints).
+
+When editing meta.json or Vega-Lite JSON, prefer README.md + AGENTS.md +
+agent-guide.json + meta.schema.json together.
+
+Vega-Lite (LLM: fetch one URL at a time, in order)
+-------------------------------------------------
+1) https://vega.github.io/schema/vega-lite/v5.json  (JSON Schema — shape of spec)
+2) https://vega.github.io/vega-lite/docs/encoding.html
+3) https://vega.github.io/vega-lite/docs/transform.html
+4) https://vega.github.io/vega-lite/docs/mark.html  (liste des marks simples + options)
+5) https://vega.github.io/vega-lite/docs/composition.html  (layer, facet, concat, repeat — combiner des vues)
+
+Marks Vega-Lite (noms usuels de "mark" dans le JSON)
+----------------------------------------------------
+bar, arc, area, line, point, circle, square, tick, rule, trail, rect, text,
+geoshape, boxplot, errorbar, errorband (+ variantes 2D / normalisées selon doc).
+Voir section "Supported Mark Types" sur la page mark ci-dessus.
+
+Marks Vega (grammar bas niveau — hors Vega-Lite)
+-----------------------------------------------
+https://vega.github.io/vega/docs/marks/  (arc, area, group, image, line, path,
+rect, rule, shape, symbol, text, trail…). N’utiliser que si la spec n’est pas
+en Vega-Lite.
+
+calculate() uses Vega expressions: https://vega.github.io/vega/docs/expressions/
+Editor: https://vega.github.io/editor/  (repo uses Vega-Lite v5 only)
+
+Choisir le graphique (dataviz — avant d’écrire le "mark")
+---------------------------------------------------------
+- From Data to Viz (arbre par type de question / variable): https://www.data-to-viz.com/
+- The Data Visualisation Catalogue (fiches « quand l’utiliser » par type): https://datavizcatalogue.com/
+- Wilke — Fundamentals of Data Visualization, ch. « Directory of visualizations » (quand utiliser quelle forme): https://clauswilke.com/dataviz/directory-of-visualizations.html
+
+Repository layout
+-----------------
+
+meta.json
+  Dashboard config: page title, defaults, intro HTML, screens (tabs), each
+  pointing to Vega-Lite JSON paths.
+
+meta.schema.json
+  JSON Schema for meta.json (validation in editors; documents field shapes).
+
+index.html
+  Single-page app: fetch meta.json, tab UI, period filter with
+  {{YEAR}}/{{MONTH}} substitution in spec URLs, lazy chart load per tab.
+
+vega-spec.json
+  Example Vega-Lite v5 spec: mqtt_hive SQL via data.url, CSV format.
+
+events.json
+  Example bar chart spec with daily aggregation SQL.
+
+How to add a Vega-Lite file
+----------------------------
+
+1. Create a new file under vega-plot/, e.g. my-chart.json.
+
+2. Set "$schema" to "https://vega.github.io/schema/vega-lite/v5.json" for
+   editor hints.
+
+3. Use "data": { "url": "<HTTP URL returning CSV>", "format": { "type": "csv" } }
+   for rsiotmonitor /sql/ endpoints.
+
+4. Encode the SQL query as the path after /sql/ (spaces and quotes appear
+   URL-encoded in practice).
+
+SQL dialect (endpoint /sql/)
+-----------------------------
+Queries are evaluated as **Apache DataFusion** SQL (not generic ANSI).
+Reference: https://datafusion.apache.org/user-guide/sql/index.html
+Scalar / aggregate reference: https://datafusion.apache.org/user-guide/sql/scalar_functions.html
+For **mqtt_hive**-style tables, push filters on partition columns (**year**, **month**)
+before heavy expressions so the engine can prune files (see e.g.
+events-by-month-rolling.json: `year in (Y-1, Y)` plus a month-index range).
+For **performance** comparison between two SQL variants, prefer **EXPLAIN ANALYZE**
+(runs the query and prints per-operator metrics). Use plain **EXPLAIN** (or
+**EXPLAIN VERBOSE**) only for structural plans without execution timings.
+DataFusion: https://datafusion.apache.org/user-guide/sql/explain.html — typically
+run in a SQL shell / DataFusion session, not the Vega `/sql/` CSV URL.
+
+5. Use placeholders {{YEAR}} and {{MONTH}} in the URL where the SQL uses hive
+   partition filters year= and month= so the dashboard period control can
+   rewrite them.
+
+6. Optional: use literal year=2026 and month=4; the app still rewrites numeric
+   year=/month= for backward compatibility.
+
+7. Test in https://vega.github.io/editor/ by pasting JSON and adjusting data.url
+   to your server (CORS must allow the page origin).
+
+8. Reference the file from meta.json: screens[].spec (one chart) or
+   screens[].charts[].spec (several charts per tab).
+
+How to add a screen in meta.json
+---------------------------------
+
+1. Add an object to the "screens" array with a unique "id" (letters, digits, _, -).
+
+2. Set "title" for the tab label; optional "description" or "descriptionHtml"
+   for text under the tab.
+
+3. Either set "spec": "relative/path.json" for a single chart, OR set
+   "charts": [{ "spec": "...", "id": "slot1", ... }] for multiple charts
+   (charts wins if non-empty).
+
+4. Optional "layout": "row" | "stack" or { "flow": "row|stack", "gap": "16px" };
+   per-chart "layout": { "span": "half|full|auto", "breakBefore": true } inside
+   charts[].
+
+SQL data URL contract
+---------------------
+
+Shape:
+  Base URL + /sql/ + URL-encoded SQL string. Example host from this project:
+  http://HOST:PORT/sql/select ... from mqtt_hive where ... and year={{YEAR}}
+  and month={{MONTH}} ...
+
+Placeholders:
+  {{YEAR}}  — Substituted with the integer year from the filter (e.g. 2026).
+  {{MONTH}} — Substituted with month 1-12 (no zero-padding).
+
+Runtime behavior:
+  Before fetch, every "url" field in the Vega spec tree is patched. Requests run
+  only when the user opens that tab (lazy load). Changing year/month refetches
+  CSV for charts whose spec was already loaded.
+
+Useful links
+------------
+
+Vega Editor
+  https://vega.github.io/editor/
+  Design and debug Vega/Vega-Lite; paste JSON and preview.
+
+Vega-Lite documentation
+  https://vega.github.io/vega-lite/
+  Encoding, transforms, marks.
+
+Vega-Lite v5 JSON Schema
+  https://vega.github.io/schema/vega-lite/v5.json
+  Use as "$schema" inside each Vega spec file.
+
+This repo meta.schema.json
+  ./meta.schema.json
+  Structure of meta.json; set "$schema" in meta.json for IDE validation.

@@ -1,0 +1,104 @@
+{
+  "version": 1,
+  "audience": "coding_agents",
+  "summary": "The vega-plot dashboard is a static SPA (index.html) that reads meta.json, renders tabs from meta.screens[], lazy-loads Vega-Lite JSON per tab, and patches data URLs with the user's Year/Month filter ({{YEAR}}, {{MONTH}} or literal year=/month=).",
+  "entryPoints": {
+    "humanDocs": "README.md",
+    "assistantPlainText": "llm.txt",
+    "agentInstructions": "AGENTS.md",
+    "structuredTasks": "agent-guide.json",
+    "dashboardConfig": "meta.json",
+    "configSchema": "meta.schema.json",
+    "runtime": "index.html"
+  },
+  "concepts": {
+    "screen": {
+      "definition": "One tab in the UI = one object in meta.json screens[]",
+      "requiredFields": ["id"],
+      "chartSources": "Either screen.spec (single path string) OR screen.charts[] (non-empty array); charts wins over spec when present."
+    },
+    "chartSpecFile": {
+      "definition": "A Vega-Lite v5 JSON file with data.url pointing at HTTP CSV (typically rsiotmonitor /sql/...)",
+      "schemaUrl": "https://vega.github.io/schema/vega-lite/v5.json"
+    },
+    "periodFilter": {
+      "definition": "Global Year + Month controls in index.html",
+      "substitution": "Before fetch, every url string in the Vega spec tree is patched: {{YEAR}}, {{MONTH}}, and regex year=\\d+, month=\\d+",
+      "defaults": "meta.defaults.year/month; URL query ?year=&month= overrides"
+    },
+    "lazyLoad": {
+      "definition": "Vega JSON + CSV fetch only when the user activates that tab the first time",
+      "implication": "Changing period refetches only charts that already loaded raw spec into memory"
+    }
+  },
+  "tasks": {
+    "createNewGraphic": {
+      "goal": "New visualization from mqtt_hive / SQL CSV",
+      "steps": [
+        "Create vega-plot/<name>.json with $schema Vega-Lite v5",
+        "Add data: { url: \"http://HOST:PORT/sql/<encoded SQL>\", format: { type: csv } }",
+        "Use {{YEAR}} and {{MONTH}} in SQL URL where partitions year/month apply",
+        "Wire into meta.json: add screens[].spec OR screens[].charts[].spec path",
+        "Ensure rsiotmonitor HTTP server exposes /sql and CORS if cross-origin"
+      ],
+      "filesUsuallyCreated": ["vega-plot/*.json"],
+      "filesUsuallyEdited": ["meta.json"]
+    },
+    "createNewTabPage": {
+      "goal": "New tab with one or more charts",
+      "steps": [
+        "Append { id, title, spec } or { id, title, charts: [...] } to meta.screens",
+        "Use unique id (letters, digits, underscore, hyphen)",
+        "Optional layout + charts[].layout for row/half/full/breakBefore per README"
+      ],
+      "filesUsuallyEdited": ["meta.json"]
+    },
+    "adjustDashboardCopy": {
+      "goal": "Change titles, intro, defaults",
+      "fields": {
+        "pageTitle": "meta.pageTitle",
+        "introHtml": "meta.introHtml",
+        "defaults": "meta.defaults year/month",
+        "tabTitle": "screens[].title",
+        "tabDescription": "screens[].description or descriptionHtml"
+      }
+    },
+    "fixDataNotLoading": {
+      "checklist": [
+        "Page served over HTTP not file://",
+        "meta.json and Vega JSON paths relative to index.html",
+        "CSV URL reachable; CORS allows browser origin",
+        "SQL matches hive partitions; {{YEAR}}/{{MONTH}} aligned with SQL",
+        "Browser Network tab for 4xx/5xx on /sql/"
+      ]
+    }
+  },
+  "metaJsonQuickReference": {
+    "pageTitle": "string — window title and H1",
+    "defaults": "{ year: integer, month: 1-12 }",
+    "introHtml": "string — HTML snippet",
+    "screens[]": {
+      "id": "required string — tab anchor id",
+      "title": "tab label",
+      "spec": "relative path to one Vega-Lite file",
+      "charts": "array of { id?, title?, spec, layout?, description? }",
+      "layout": "stack | row | { flow, gap, defaultChart? }"
+    }
+  },
+  "vegaSpecQuickReference": {
+    "minimumCsvSetup": {
+      "data": {
+        "url": "HTTP URL returning CSV body",
+        "format": { "type": "csv" }
+      }
+    },
+    "placeholdersInUrl": ["{{YEAR}}", "{{MONTH}}"],
+    "examplesInRepo": ["events.json", "vega-spec.json"]
+  },
+  "constraints": [
+    "Do not assume charts load until tab is opened",
+    "Placeholder substitution applies to any key named url nested in Vega JSON",
+    "meta.schema.json validates meta.json shape; Vega files are not validated by this repo unless editor uses Vega schema",
+    "introHtml and descriptionHtml are trusted HTML — escape user content if generating dynamically"
+  ]
+}
